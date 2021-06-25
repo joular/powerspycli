@@ -13,6 +13,17 @@ On Debian/Ubuntu: ```apt install bluez python-bluez```. On Arch-based distros: i
 
 Then clone the repo (or just download the ```powerspycli.py``` file), and run it.
 
+### Installing on SailfishOS
+
+On the Linux-based mobile OS, SailfishOS, you can run PowerSpyCli by installing the following packages:
+```
+devel-su zypper install bluez5-libs-devel make gcc glib2-devel
+python3 -m venv venv
+source venv/bin/activate
+pip install wheel
+pip install pybluez
+```
+
 ## Running PowerSpyCli
 
 To run PowerSpyCli and start collecting power metrics, just run the python file: ```python powerspycli.py``` or directly ```./powerspycli.py```.
