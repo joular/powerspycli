@@ -46,5 +46,5 @@ PowerSpyCli is forked from: https://github.com/patrickmarlier/powerspy.py/ with 
 
 It is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
 
-Copyright (c) 2021, Université de Pau et des Pays de l'Adour.
+Copyright (c) 2021, Adel Noureddine, Université de Pau et des Pays de l'Adour.
 All rights reserved. This program and the accompanying materials are made available under the terms of the  GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later) which accompanies this distribution, and is available at: https://www.gnu.org/licenses/lgpl-3.0.en.html
