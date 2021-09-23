@@ -1,5 +1,4 @@
-PowerSpyCli
-===========
+# [![Joular Project](https://gitlab.com/uploads/-/system/group/avatar/10668049/joular.png?width=64)](https://www.noureddine.org/research/joular/) PowerSpyCli
 
 PowerSpyCli is a tool to connect and collect power metrics from a [PowerSpy 2 powermeter](https://www.alciom.com/nos-metiers/produits/powerspy2/).
 
