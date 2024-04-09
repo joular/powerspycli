@@ -6,11 +6,14 @@ PowerSpyCli is tested on GNU/Linux and works with Python 3.
 
 ## Installation
 
-To run PowerSpyCli, you need to install ```bluez``` and ```python-bluez```.
+- To run PowerSpyCli, you need to install ```bluez``` and ```python-bluez```.
 
 On Debian/Ubuntu: ```apt install bluez python-bluez```. On Arch-based distros: install ```bluez``` and ```python-pybluez```.
 
-Then clone the repo (or just download the ```powerspycli.py``` file), and run it.
+On recent distributions, pybluez is not available in the repositories anymore (the development of pybluez stopped).
+You can still download and install the latest version with ```pip``` directly from their git repository: ```pip install git+https://github.com/pybluez/pybluez.git#egg=pybluez```
+
+- Then clone the repo (or just download the ```powerspycli.py``` file), and run it.
 
 ### Installing on SailfishOS
 
