@@ -15,6 +15,24 @@ You can still download and install the latest version with ```pip``` directly fr
 
 - Then clone the repo (or just download the ```powerspycli.py``` file), and run it.
 
+### With Python >= 3.10
+
+PowerSpyCli depends on PyBluez and is has problems running on Python >= 3.10.
+
+As a workaround, you can run the tool with Python 3.9. For instance, using a different Python distribution such as Anaconda or Miniconda.
+
+Instlal ```libbluetooth-dev``` or ```bluez-libs-devel```, then run the following commands (replace with the proper path of miniconda):
+
+```
+/opt/miniconda/bin/conda init
+conda create --name python39 python==3.9
+conda activate python39
+pip install setuptools==57.5.0
+pip install pybluez
+```
+
+Then run PowerSpyCli from this distribution of Python.
+
 ### Installing on SailfishOS
 
 On the Linux-based mobile OS, SailfishOS, you can run PowerSpyCli by installing the following packages:
