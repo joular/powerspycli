@@ -31,7 +31,7 @@
 # along with powerspy.py.  If not, see <http://www.gnu.org/licenses/>.
 
 import logging
-import bluetooth
+import socket
 import struct  # conversion of type
 import re      # matching responses
 import math    # sqrt
@@ -98,11 +98,11 @@ class PowerSpy:
     if self.sock != None:
       logging.warning("Already connected")
       return 1
-    self.sock = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+    self.sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
     logging.debug("Connecting to %s..." % str(address))
     try:
       self.sock.connect(address)
-    except bluetooth.btcommon.BluetoothError as error:
+    except OSError as error:
       logging.error("Cannot connect to %s (%s)" % (str(address), str(error)))
       return 1
 
@@ -115,7 +115,7 @@ class PowerSpy:
     # All powerspy commands are tagged with < >
     buf = '<%s>' % c
     logging.debug("SEND: %s" % buf)
-    self.sock.sendall(buf)
+    self.sock.sendall(buf.encode())
 
   def recvCmd(self, size = 1):
     global running
@@ -128,14 +128,15 @@ class PowerSpy:
         # then read one by one
         size = 1
       # TODO: fix in case of multiple ctrl+c
-      except bluetooth.btcommon.BluetoothError as err:
-        # damn BluetoothError
-        err = eval(err[0])
-        if err[0] == errno.EAGAIN:
-          logging.debug("EAGAIN due to signal interrupt. Try to quit.")
+      except OSError as err:
+        if err.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+          logging.debug("EAGAIN or EWOULDBLOCK due to signal interrupt. Try to quit.")
           running = False
-        else: # TODO probably timeout but there is no specific exception for it
-          logging.warning("Maybe timeout? %s" % err)
+        elif err.errno == errno.EWOULDBLOCK:
+          logging.warning("Socket timeout or would block error: %s" % err)
+          break
+        else:
+          logging.error("Socket error while recieving command: %s" % err)
           break
       # FIXME what to do for multiple message? keep it in buffer...
       buf = "%s%s" % (buf,r.decode())
