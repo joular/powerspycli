@@ -447,7 +447,7 @@ if __name__ == '__main__':
   parser.add_argument('device_mac', metavar='MAC', help='MAC address of the PowerSpy device.')
   parser.add_argument('-v', '--verbose', action='count', help='Verbose mode.')
   parser.add_argument('-a', '--allmetrics', action='count', help='Show all metrics.')
-  parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy_"+str(time.time())+".csv", default=None,
+  parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy_"+str(int(time.time()))+".csv", default=None,
   help='Name of csv file to store power data. If used without argument, a default name is assigned.')
 
   args = parser.parse_args()
@@ -479,7 +479,6 @@ if __name__ == '__main__':
   
   if args.file is None:
         args.file = ""
-    
 
   dev.rt_capture(args.file)
 
