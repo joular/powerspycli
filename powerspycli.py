@@ -1,14 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2021 Adel Noureddine <adel.noureddine@univ-pau.fr>
+# Copyright (c) 2021-2025 Adel Noureddine <adel.noureddine@univ-pau.fr>
 # Modifications compared to original version :
 # - Add Python 3 support
+# - Replace pyBluez with sockets, hence making the tool multi-OS
 # - Fix 'b' characters in data receptions on some PowerSpy devices
 # - Print values on same line (using \r)
 # - Remove interval, time and other arguments and options, and remove simulator
 # - Add option to show time and (only power or all metrics [voltage, ampere, etc.])
 # - Add save to CSV option
+#
+# Contributors:
+# - Ali Bouhjira, 2025.
 #
 # Original version copyright:
 # Copyright (c) 2014 Patrick Marlier <patrick.marlier@gmail.com>
