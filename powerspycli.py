@@ -2,37 +2,19 @@
 # -*- coding: utf-8 -*-
 #
 # Copyright (c) 2021-2025 Adel Noureddine <adel.noureddine@univ-pau.fr>
-# Modifications compared to original version :
-# - Add Python 3 support
-# - Replace pyBluez with sockets, hence making the tool multi-OS
-# - Fix 'b' characters in data receptions on some PowerSpy devices
-# - Print values on same line (using \r)
-# - Remove interval, time and other arguments and options, and remove simulator
-# - Add option to show time and (only power or all metrics [voltage, ampere, etc.])
-# - Add save to CSV option
 #
 # Contributors:
 # - Ali Bouhjira, 2025.
 #
-# Original version copyright:
-# Copyright (c) 2014 Patrick Marlier <patrick.marlier@gmail.com>
-# Copyright (c) 2014 Mascha Kurpicz <mascha.kurpicz@gmail.com>
-#                    University of Neuchatel, Switzerland
+# Authors of the original 2014 version (which we forked from):
+# - Patrick Marlier, 2014
+# - 2014 Mascha Kurpicz, 2014
 #
-# This file is part of powerspy.py.
-#
-# powerspy.py is free software; you can redistribute it and/or modify it under
-# the terms of the Lesser GNU Lesser General Public License as published by
-# the Free Software Foundation; either version 3 of the License, or
-# (at your option) any later version.
-#
-# powerspy.py is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# Lesser GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the Lesser GNU Lesser General Public License
-# along with powerspy.py.  If not, see <http://www.gnu.org/licenses/>.
+# All rights reserved. This program and the accompanying materials
+# are made available under the terms of the
+# GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later)
+# which accompanies this distribution, and is available at:
+# https://www.gnu.org/licenses/lgpl-3.0.en.html
 
 import logging
 import socket
