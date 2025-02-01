@@ -426,6 +426,13 @@ def exit_gracefully(signal, frame):
   global running
   running = False
 
+def is_valid_mac(address):
+  address_regex = re.compile(r"""
+      (^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$) |  # 00:1A:2B:3C:4D:5E or 00-1A-2B-3C-4D-5E
+      (^([0-9A-Fa-f]{4}\.){2}([0-9A-Fa-f]{4})$)      # 001A.2B3C.4D5E (Cisco format)
+  """, re.VERBOSE)
+  return bool(address_regex.match(address))
+
 if __name__ == '__main__':
   import argparse
   parser = argparse.ArgumentParser(description='Alciom PowerSpy reader.')
@@ -437,6 +444,10 @@ if __name__ == '__main__':
   help='Name of csv file to store power data. If used without argument, a default name is assigned.')
 
   args = parser.parse_args()
+
+  if not is_valid_mac(args.device_mac):
+    print("MAC address is not valid: %s" % args.device_mac)
+    sys.exit(1)
 
   print("Please wait while connecting and getting data from PowerSpy")
 
