@@ -380,9 +380,11 @@ class PowerSpy:
     # Save to CSV file
     global writer, file
     if filename != "":
-      file = open(filename, 'w', newline='')
+      file = open(filename, "a+", newline='')
+      file.seek(0)
       writer = csv.writer(file, delimiter=';', quoting=csv.QUOTE_NONE)
-      writer.writerow(["Timestamp", "Power"])
+      if file.read(1) == "":
+        writer.writerow(["Timestamp", "Power"])
 
     # TODO to pythonify
     voltages = []
@@ -421,6 +423,8 @@ class PowerSpy:
         # Save to CSV file
         if filename != "":
           writer.writerow(['{:.0f}'.format(time.time()), '{:.3f}'.format(power)])
+          file.flush()
+          
     except Exception as e:
       logging.error("Realtime capture failed (%s)" % e)
       if filename != "":
@@ -443,7 +447,9 @@ if __name__ == '__main__':
   parser.add_argument('device_mac', metavar='MAC', help='MAC address of the PowerSpy device.')
   parser.add_argument('-v', '--verbose', action='count', help='Verbose mode.')
   parser.add_argument('-a', '--allmetrics', action='count', help='Show all metrics.')
-  parser.add_argument('-f', '--file', type=str, default="", help='Name of csv file to store power data.')
+  parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy_"+str(int(time.time()))+".csv", default=None,
+  help='Name of csv file to store power data. If used without argument, a default name is assigned.')
+
   args = parser.parse_args()
 
   print("Please wait while connecting and getting data from PowerSpy")
@@ -470,6 +476,9 @@ if __name__ == '__main__':
   if not dev.init():
     print("Device cannot be initialized")
     sys.exit(1)
+  
+  if args.file is None:
+        args.file = ""
 
   dev.rt_capture(args.file)
 
