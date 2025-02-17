@@ -27,6 +27,7 @@ import time    # sleep/time
 import errno   # IOError numbers
 import codecs  # for hex decoder
 import csv     # for csv handling
+from gui import PowerSpyApp
 
 # All powerspy commands
 CMD_ID = '?'
@@ -56,7 +57,7 @@ CMD_OK = 'K'
 CMD_FAILED = 'Z'
 
 # Global variable for the ctrl+c handler
-running = True
+
 
 # Variable to show all metrisc or not
 allmetrics = False
@@ -79,6 +80,7 @@ class PowerSpy:
     self.uscale_current = self.iscale_current = self.pscale_current = None
     self.frequency = None
     self.max_avg_period = None
+    self.running = True
 
   def connect(self, address):
     if self.sock != None:
@@ -379,7 +381,7 @@ class PowerSpy:
     pvoltages = []
     pcurrents = []
     try:
-      while running:
+      while self.running:
         voltage, current, power, pvoltage, pcurrent = self.rt_read()
         # TODO should we check if rt_read returns [0,0,0,0,0] or None?
         if every != 0:
@@ -405,6 +407,7 @@ class PowerSpy:
           sys.stdout.write("\r%0.0f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f          " % (time.time(), voltage, current, power, pvoltage, pcurrent))
         else:
           sys.stdout.write("\r%0.0f\t%0.3f     " % (time.time(), power))
+          self.gui.update_data_fields(f"{time.time():0.0f}",f"{power:.3f}")
 
         # Save to CSV file
         if filename != "":
@@ -423,8 +426,9 @@ class PowerSpy:
 
 # Signal handler to exit properly on SIGINT
 def exit_gracefully(signal, frame):
-  global running
-  running = False
+  self.running = False
+
+
 
 def is_valid_mac(address):
   address_regex = re.compile(r"""
@@ -434,6 +438,13 @@ def is_valid_mac(address):
   return bool(address_regex.match(address))
 
 if __name__ == '__main__':
+
+  dev = PowerSpy()
+  app = PowerSpyApp(dev)
+  dev.gui=app
+  app.run()
+
+  '''
   import argparse
   parser = argparse.ArgumentParser(description='Alciom PowerSpy reader.')
   # TODO can add mac address checker and normalizer
@@ -480,3 +491,4 @@ if __name__ == '__main__':
   dev.rt_capture(args.file)
 
   dev.close()
+  '''
