@@ -23,10 +23,11 @@ The ```-v``` argument will display all the logs and connection info (verbose mod
 
 To save the power data along with the timestamp to a CSV file, use the ```-f``` argument:
 ```./powerspycli.py 00:11:22:33:44:55 -f file.csv```.
+You can omit specifying a filename, in this case, a default file will be created named powerspy-$timestamp.csv (with $timestamp being the current timestamp date).
 
 ## License
 
-PowerSpyCli is forked from: https://github.com/patrickmarlier/powerspy.py/ with support for Python 3, replacing pyBluez with Python sockets, and many additional new features and updates.
+PowerSpyCli is forked from: [powerspy.py](https://github.com/patrickmarlier/powerspy.py/) with support for Python 3, replacing pyBluez with Python sockets, and many additional new features and updates.
 
 It is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
 
