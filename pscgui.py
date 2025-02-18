@@ -6,8 +6,7 @@ import time
 import re
 import threading
 
-
-class PowerSpyApp:
+class PSCGUI:
     def __init__(self, powerspy_):
         self.powerspy = powerspy_
         self.root = ttk.Window(themename="flatly")

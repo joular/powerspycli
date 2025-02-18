@@ -27,7 +27,7 @@ import time    # sleep/time
 import errno   # IOError numbers
 import codecs  # for hex decoder
 import csv     # for csv handling
-from gui import PowerSpyApp
+from pscgui import PSCGUI # for GUI interface
 
 # All powerspy commands
 CMD_ID = '?'
@@ -57,10 +57,13 @@ CMD_OK = 'K'
 CMD_FAILED = 'Z'
 
 # Global variable for the ctrl+c handler
-
+running = True
 
 # Variable to show all metrisc or not
 allmetrics = False
+
+# Variable to identify if GUI or CLI running
+is_gui = False
 
 # Constants
 DEFAULT_TIMEOUT = 3.0 # secs (float allowed, timeout to receive response from PowerSpy, except in realtime mode)
@@ -80,7 +83,6 @@ class PowerSpy:
     self.uscale_current = self.iscale_current = self.pscale_current = None
     self.frequency = None
     self.max_avg_period = None
-    self.running = True
 
   def connect(self, address):
     if self.sock != None:
@@ -271,7 +273,7 @@ class PowerSpy:
     self.sock.settimeout(interval + DEFAULT_TIMEOUT)
     # Check if exceeded number of avg_period
     if avg_period > self.max_avg_period:
-      logging.error('Your PowerSpy does not support %d averaging periods (only %d).' % (avg_period, max_avg_period))
+      logging.error('Your PowerSpy does not support %d averaging periods (only %d).' % (avg_period, self.max_avg_period))
       return False
     # Encoding of the J command is different between v1 and v2
     if self.hw_version == "02":
@@ -381,7 +383,7 @@ class PowerSpy:
     pvoltages = []
     pcurrents = []
     try:
-      while self.running:
+      while running:
         voltage, current, power, pvoltage, pcurrent = self.rt_read()
         # TODO should we check if rt_read returns [0,0,0,0,0] or None?
         if every != 0:
@@ -407,7 +409,6 @@ class PowerSpy:
           sys.stdout.write("\r%0.0f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f          " % (time.time(), voltage, current, power, pvoltage, pcurrent))
         else:
           sys.stdout.write("\r%0.0f\t%0.3f     " % (time.time(), power))
-          self.gui.update_data_fields(f"{time.time():0.0f}",f"{power:.3f}")
 
         # Save to CSV file
         if filename != "":
@@ -426,9 +427,8 @@ class PowerSpy:
 
 # Signal handler to exit properly on SIGINT
 def exit_gracefully(signal, frame):
-  self.running = False
-
-
+  global running
+  running = False
 
 def is_valid_mac(address):
   address_regex = re.compile(r"""
@@ -438,57 +438,58 @@ def is_valid_mac(address):
   return bool(address_regex.match(address))
 
 if __name__ == '__main__':
-
-  dev = PowerSpy()
-  app = PowerSpyApp(dev)
-  dev.gui=app
-  app.run()
-
-  '''
   import argparse
   parser = argparse.ArgumentParser(description='Alciom PowerSpy reader.')
-  # TODO can add mac address checker and normalizer
-  parser.add_argument('device_mac', metavar='MAC', help='MAC address of the PowerSpy device.')
-  parser.add_argument('-v', '--verbose', action='count', help='Verbose mode.')
-  parser.add_argument('-a', '--allmetrics', action='count', help='Show all metrics.')
+  parser.add_argument('-m', '--devicemac', metavar='MAC', help='MAC address of the PowerSpy device.')
+  parser.add_argument('-g', '--gui', action='store_true', help='GUI interface.')
+  parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
+  parser.add_argument('-a', '--allmetrics', action='store_true', help='Show all metrics.')
   parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy_"+str(int(time.time()))+".csv", default=None,
   help='Name of csv file to store power data. If used without argument, a default name is assigned.')
 
   args = parser.parse_args()
 
-  if not is_valid_mac(args.device_mac):
-    print("MAC address is not valid: %s" % args.device_mac)
-    sys.exit(1)
+  if args.gui:
+    # Start GUI
+    is_gui = True
+    dev = PowerSpy()
+    app = PSCGUI(dev)
+    dev.gui = app
+    app.run()
+  else:
+    # Start CLI
+    if (args.devicemac is None) or (not is_valid_mac(args.devicemac)):
+      print("MAC address is not valid: %s" % args.devicemac)
+      sys.exit(1)
 
-  print("Please wait while connecting and getting data from PowerSpy")
+    print("Please wait while connecting and getting data from PowerSpy")
 
-  if args.verbose:
-    if args.verbose > 0:
-      logging.basicConfig(level=logging.DEBUG)
+    if args.verbose:
+      if args.verbose > 0:
+        logging.basicConfig(level=logging.DEBUG)
 
-  if args.allmetrics:
-      allmetrics = True
+    if args.allmetrics:
+        allmetrics = True
 
-  # Setup signal handler for CTRL-C
-  signal.signal(signal.SIGINT, exit_gracefully)
+    # Setup signal handler for CTRL-C
+    signal.signal(signal.SIGINT, exit_gracefully)
 
-  dev = PowerSpy()
+    dev = PowerSpy()
 
-  # TODO set port to 1 but can be different?
-  port = 1
-  err = dev.connect((args.device_mac, port))
-  if err:
-    print("Cannot connect to the device %s" % args.device_mac)
-    sys.exit(1)
+    # TODO set port to 1 but can be different?
+    port = 1
+    err = dev.connect((args.devicemac, port))
+    if err:
+      print("Cannot connect to the device %s" % args.devicemac)
+      sys.exit(1)
 
-  if not dev.init():
-    print("Device cannot be initialized")
-    sys.exit(1)
-  
-  if args.file is None:
-        args.file = ""
+    if not dev.init():
+      print("Device cannot be initialized")
+      sys.exit(1)
 
-  dev.rt_capture(args.file)
+    if args.file is None:
+          args.file = ""
 
-  dev.close()
-  '''
+    dev.rt_capture(args.file)
+
+    dev.close()
