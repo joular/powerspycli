@@ -39,22 +39,26 @@ class PowerSpyApp:
         self.file_selector_button = ttk.Button(self.root, text="Select File", command=self.select_file, bootstyle=INFO, state=DISABLED)
         self.file_selector_button.grid(row=2, column=1, padx=10, pady=10)
 
+        # File Label, if any, show the name of the file where data is written to
+        self.file_label = ttk.Label(self.root, text="File: none", bootstyle=INFO)
+        self.file_label.grid(row=3, column=0, columnspan=2, padx=10, pady=10)
+
         # Status Label
         self.status_label = ttk.Label(self.root, text="Status: Idle", bootstyle=INFO)
-        self.status_label.grid(row=3, column=0, columnspan=2, padx=10, pady=10)
+        self.status_label.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
         # Timestamp and power label (shown when capture starts)
-        self.timestamp_label = ttk.Label(self.root, text="Timestamp:")
+        self.timestamp_label = ttk.Label(self.root, text="Timestamp")
         self.timestamp_value = ttk.Label(self.root, text="")
-        self.power_label = ttk.Label(self.root, text="Power:")
+        self.power_label = ttk.Label(self.root, text="Power (Watts)")
         self.power_value = ttk.Label(self.root, text="")
 
     def show_data_fields(self):
         """ Affiche les champs timestamp et power """
-        self.timestamp_label.grid(row=4, column=0, padx=10, pady=10)
-        self.timestamp_value.grid(row=4, column=1, padx=10, pady=10)
-        self.power_label.grid(row=5, column=0, padx=10, pady=10)
-        self.power_value.grid(row=5, column=1, padx=10, pady=10)
+        self.timestamp_label.grid(row=5, column=0, padx=10, pady=10)
+        self.timestamp_value.grid(row=6, column=0, padx=10, pady=10)
+        self.power_label.grid(row=5, column=1, padx=10, pady=10)
+        self.power_value.grid(row=6, column=1, padx=10, pady=10)
 
     def hide_data_fields(self):
         """ Cache les champs timestamp et power """
@@ -75,11 +79,9 @@ class PowerSpyApp:
         if not self.is_valid_mac(mac_address):
             messagebox.showerror("Invalid MAC Address", "Please enter a valid MAC address.")
             return
-
         
         self.start_button.config(state=DISABLED)
         self.root.update_idletasks()
-
 
         if self.write_to_file.get():
             file_path = self.file_path.get()
@@ -89,6 +91,7 @@ class PowerSpyApp:
                 file_path = f"powerspy-{timestamp}.csv"
                 self.file_path.set(file_path)
                 messagebox.showinfo("Default File Created", f"No file selected. Using default file: {file_path}")
+            self.file_label.config(text="Saving to: " + file_path, bootstyle=SUCCESS)
 
         if self.powerspy.sock == None :
             self.status_label.config(text="Status: connecting ...", bootstyle=WARNING)
@@ -98,13 +101,12 @@ class PowerSpyApp:
                     self.status_label.config(text="Status: Device cannot be initialized retry", bootstyle=DANGER)
                     self.start_button.config(state=NORMAL)
                     return
-            
             else:
                 self.status_label.config(text="connexion error, retry several times", bootstyle=DANGER)
                 self.start_button.config(state=NORMAL)
         self.status_label.config(text="Status: listening to : Powerspy [" + mac_address + "]", bootstyle=SUCCESS)
         self.stop_button.config(state=NORMAL)
-        self.mac_entry.config(state= DISABLED)
+        self.mac_entry.config(state=DISABLED)
         self.toggle_capture(self.file_path.get())
         self.show_data_fields() 
 
@@ -112,6 +114,7 @@ class PowerSpyApp:
         self.status_label.config(text="Status: Stopped", bootstyle=DANGER)
         self.start_button.config(state=NORMAL)
         self.stop_button.config(state=DISABLED)
+        self.mac_entry.config(state=NORMAL)
         self.powerspy.running = False
         self.hide_data_fields()  
 
@@ -137,8 +140,6 @@ class PowerSpyApp:
             (^([0-9A-Fa-f]{4}\.){2}([0-9A-Fa-f]{4})$)      # 001A.2B3C.4D5E (Cisco format)
         """, re.VERBOSE)
         return bool(address_regex.match(address))
-
-   
 
     def run(self):
         self.root.mainloop()
