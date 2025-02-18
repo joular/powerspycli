@@ -1,8 +1,8 @@
 # <a href="https://www.noureddine.org/research/joular/"><img src="https://raw.githubusercontent.com/joular/.github/main/profile/joular.png" alt="Joular Project" width="64" /></a> PowerSpyCli
 
-PowerSpyCli is a multi-platform tool to connect and collect power metrics from a [PowerSpy 2 powermeter](https://www.alciom.com/nos-metiers/produits/powerspy2/).
+PowerSpyCli is a multi-platform software to connect and collect power metrics from a [PowerSpy 2 powermeter](https://www.alciom.com/nos-metiers/produits/powerspy2/).
 
-PowerSpyCli works in Windows, Linux and macOS with Python 3.
+PowerSpyCli (command line and GUI) was tested on Windows and Linux with Python 3.
 
 ## Installation
 
@@ -10,20 +10,36 @@ Just download the ```powerspycli.py``` file and run it.
 
 ## Running PowerSpyCli
 
-To run PowerSpyCli and start collecting power metrics, just run the python file: ```python powerspycli.py``` or directly ```./powerspycli.py```.
+### Command line version
 
-The tool requires the PowerSpy2 MAC address in order to run: ```./powerspycli.py 00:11:22:33:44:55```.
+To run PowerSpyCli and start collecting power metrics, just run the software while providing the PowerSpy2 MAC address with the ```-m``` argument:
+
+```
+python powerspycli.py -m 00:11:22:33:44:55
+```
+
+### GUI version
+
+To run PowerSpyCli GUI version, just run the software with the ```-g``` argument:
+
+```
+python powerspycli.py -g
+```
 
 ### Arguments
 
-PowerSpyCli, by default, will display the power consumption of the PowerSpy every second.
+The ```-m``` argument is followed by the PowerSpy2 MAC address. 
+
+PowerSpyCli, by default, will display the power consumption of the PowerSpy2 every second.
 To show all the collected metrics (i.e., voltage, ampere, etc.), run it with the ```-a``` argument.
 
 The ```-v``` argument will display all the logs and connection info (verbose mode).
 
 To save the power data along with the timestamp to a CSV file, use the ```-f``` argument:
 ```./powerspycli.py 00:11:22:33:44:55 -f file.csv```.
-You can omit specifying a filename, in this case, a default file will be created named powerspy-$timestamp.csv (with $timestamp being the current timestamp date).
+If you don't specify a filename, a default file will be created named powerspy-$timestamp.csv (with $timestamp being the current timestamp date).
+
+The ```-g``` argument will run the GUI interface instead of the command line one. 
 
 ## License
 
