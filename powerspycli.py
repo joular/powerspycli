@@ -16,6 +16,10 @@
 # which accompanies this distribution, and is available at:
 # https://www.gnu.org/licenses/lgpl-3.0.en.html
 
+# To disable Python compile cache
+import sys
+sys.dont_write_bytecode = True
+
 # For connecting and collecting data from the power meter
 import logging
 import socket
@@ -28,13 +32,6 @@ import time    # sleep/time
 import errno   # IOError numbers
 import codecs  # for hex decoder
 import csv     # for csv handling
-
-# For the GUI interface
-import ttkbootstrap as ttk
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from ttkbootstrap.constants import *
-import threading
 
 # All powerspy commands
 CMD_ID = '?'
@@ -62,9 +59,6 @@ CMD_FILE_GET = 'X'
 # Generic responses
 CMD_OK = 'K'
 CMD_FAILED = 'Z'
-
-# Global variable for the ctrl+c handler
-running = True
 
 # Variable to show all metrisc or not
 allmetrics = False
@@ -284,6 +278,7 @@ class PowerSpy:
     self.uscale_current = self.iscale_current = self.pscale_current = None
     self.frequency = None
     self.max_avg_period = None
+    self.running = True
 
   def connect(self, address):
     if self.sock != None:
@@ -309,7 +304,6 @@ class PowerSpy:
     self.sock.sendall(buf.encode())
 
   def recvCmd(self, size = 1):
-    global running
     assert(self.sock != None)
     # All powerspy commands are tagged with < >
     buf = ""
@@ -322,7 +316,7 @@ class PowerSpy:
       except OSError as err:
         if err.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
           logging.debug("EAGAIN or EWOULDBLOCK due to signal interrupt. Try to quit.")
-          running = False
+          self.running = False
         elif err.errno == errno.EWOULDBLOCK:
           logging.warning("Socket timeout or would block error: %s" % err)
           break
@@ -551,22 +545,27 @@ class PowerSpy:
     if not self.acquisition_start():
       logging.error('Acquisition failed')
       return
+
     # Convert the interval using frequency to find the averaging periods
     avg_period = int(round(self.frequency))
+
     if avg_period > self.max_avg_period:
       logging.warning('PowerSpy capacity exceeded: it will be average of averaged values for one second.')
       avg_period = int(round(self.frequency))
       every = 1
     else:
       every = 0
+
     if not self.rt_start(avg_period):
       logging.error('Realtime acquisition failed')
       self.acquisition_stop()
       return
-    if allmetrics:
-      print("# Timestamp\tV\tA\tW\tV\tA")
-    else:
-      print("# Timestamp\tW")
+
+    if not is_gui:
+      if allmetrics:
+        print("# Timestamp\tV\tA\tW\tV\tA")
+      else:
+        print("# Timestamp\tW")
 
     # Save to CSV file
     global writer, file
@@ -584,7 +583,7 @@ class PowerSpy:
     pvoltages = []
     pcurrents = []
     try:
-      while running:
+      while self.running:
         voltage, current, power, pvoltage, pcurrent = self.rt_read()
         # TODO should we check if rt_read returns [0,0,0,0,0] or None?
         if every != 0:
@@ -606,10 +605,18 @@ class PowerSpy:
           pvoltages = []
           pcurrents = []
 
-        if allmetrics:
-          sys.stdout.write("\r%0.0f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f          " % (time.time(), voltage, current, power, pvoltage, pcurrent))
+        if is_gui:
+          # Write to GUI
+          self.gui.update_data_fields(f"{time.time():0.0f}", f"{power:.3f}")
         else:
-          sys.stdout.write("\r%0.0f\t%0.3f     " % (time.time(), power))
+          # Write to terminal
+          if allmetrics:
+            # Write all metrics
+            sys.stdout.write("\r%0.0f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f          " % (
+            time.time(), voltage, current, power, pvoltage, pcurrent))
+          else:
+            # Write only power
+            sys.stdout.write("\r%0.0f\t%0.3f     " % (time.time(), power))
 
         # Save to CSV file
         if filename != "":
@@ -626,10 +633,9 @@ class PowerSpy:
       self.rt_stop()
       self.acquisition_stop()
 
-# Signal handler to exit properly on SIGINT
-def exit_gracefully(signal, frame):
-  global running
-  running = False
+  # Signal handler to exit properly on SIGINT
+  def exit_gracefully(self, signal, frame):
+    self.running = False
 
 def is_valid_mac(address):
   address_regex = re.compile(r"""
@@ -655,6 +661,14 @@ if __name__ == '__main__':
   args = parser.parse_args()
 
   if args.gui:
+    # Import GUI modules
+    # For the GUI interface
+    import ttkbootstrap as ttk
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+    from ttkbootstrap.constants import *
+    import threading
+
     # Start GUI
     is_gui = True
     dev = PowerSpy()
@@ -676,10 +690,10 @@ if __name__ == '__main__':
     if args.allmetrics:
         allmetrics = True
 
-    # Setup signal handler for CTRL-C
-    signal.signal(signal.SIGINT, exit_gracefully)
-
     dev = PowerSpy()
+
+    # Setup signal handler for CTRL-C
+    signal.signal(signal.SIGINT, lambda s, f: dev.exit_gracefully(s, f))
 
     # TODO set port to 1 but can be different?
     port = 1
