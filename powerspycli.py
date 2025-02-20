@@ -284,17 +284,21 @@ class PowerSpy:
     if self.sock != None:
       logging.warning("Already connected")
       return 1
-    self.sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-    logging.debug("Connecting to %s..." % str(address))
-    try:
-      self.sock.connect(address)
-    except OSError as error:
-      logging.error("Cannot connect to %s (%s)" % (str(address), str(error)))
-      return 1
 
-    # Should not set timeout before connect (connect may require more time)
-    self.sock.settimeout(DEFAULT_TIMEOUT)
-    return 0
+    self.sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+
+    # Try to connect 3 times before raising error
+    for attempt in range(3):
+      try:
+        logging.debug("Connecting to %s..." % str(address))
+        self.sock.connect(address)
+        # Should not set timeout before connect (connect may require more time)
+        self.sock.settimeout(DEFAULT_TIMEOUT)
+        return 0
+      except OSError as error:
+        logging.error("Cannot connect to %s (%s)" % (str(address), str(error)))
+        time.sleep(3) # Sleep 3 seconds before trying again
+    return 1
 
   def sendCmd(self, c):
     assert(self.sock != None)
