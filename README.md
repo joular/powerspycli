@@ -28,6 +28,8 @@ python powerspycli.py -g
 
 The GUI version uses [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) for theming, and hence this modules needs to be installed first. For instance with pip: ```pip install ttkbootstrap```. 
 
+![PowerSpyCli GUI](powerspycli-gui.png)
+
 ### Arguments
 
 The ```-m``` argument is followed by the PowerSpy2 MAC address. 
