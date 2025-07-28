@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2021-2025 Adel Noureddine <adel.noureddine@univ-pau.fr>
+# Copyright (c) 2021-2025 Adel Noureddine <adel.noureddine@outlook.com>
 #
 # Contributors:
 # - Ali Bouhjira, 2025.
