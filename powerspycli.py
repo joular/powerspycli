@@ -356,6 +356,9 @@ WAIT = "#C98A1B"
 
 PROJECT_URL = "https://github.com/joular/powerspycli"
 
+def default_csv_name():
+  return "powerspy-%d.csv" % time.time()
+
 # Smallest 1, 2 or 5 times a power of ten that is >= value (trend scale)
 def nice_ceiling(value):
   if value <= 0:
@@ -370,7 +373,8 @@ class PSCGUI:
     self.powerspy = powerspy_
     self.thread = None
     self.history = deque(maxlen=120) # last 2 minutes at one value per second
-    self._reset_stats()
+    self._cli_process = None
+    self._cli_interrupt_sent = False
 
     self.root = tk.Tk()
     self.root.title("PowerSpyCli")
@@ -379,7 +383,7 @@ class PSCGUI:
 
     family = font.nametofont("TkDefaultFont").actual("family")
     self.font_small = (family, 10)
-    normal, bold = (family, 12), (family, 12, "bold")
+    normal = (family, 12)
 
     style = ttk.Style(self.root)
     style.theme_use("clam") # the built-in theme that honors custom colors on every OS
@@ -397,9 +401,9 @@ class PSCGUI:
     for name, color, dark in (("Accent.TButton", ACCENT, ACCENT_DARK), ("Danger.TButton", DANGER, DANGER_DARK)):
       style.configure(name, background=color, foreground="white", bordercolor=color, lightcolor=color,
                       darkcolor=color, focuscolor=color, font=(family, 13, "bold"), padding=(10, 9))
-      style.map(name, background=[("disabled", BORDER), ("active", dark)], foreground=[("disabled", MUTED)],
-                bordercolor=[("disabled", BORDER), ("active", dark)], lightcolor=[("disabled", BORDER), ("active", dark)],
-                darkcolor=[("disabled", BORDER), ("active", dark)])
+      states = [("disabled", BORDER), ("active", dark)]
+      style.map(name, background=states, bordercolor=states, lightcolor=states, darkcolor=states,
+                foreground=[("disabled", MUTED)])
 
     main = tk.Frame(self.root, bg=BG, padx=16, pady=14)
     main.pack(fill=tk.BOTH, expand=True)
@@ -446,7 +450,7 @@ class PSCGUI:
     self.time_value.pack(side=tk.RIGHT)
     value = tk.Frame(reading, bg=CARD)
     value.pack(fill=tk.X)
-    self.power_value = tk.Label(value, text="—", bg=CARD, fg=INK, font=(family, 44, "bold"))
+    self.power_value = tk.Label(value, bg=CARD, fg=INK, font=(family, 44, "bold"))
     self.power_value.pack(side=tk.LEFT)
     tk.Label(value, text="W", bg=CARD, fg=MUTED, font=(family, 20)).pack(side=tk.LEFT, anchor=tk.S, padx=(6, 0), pady=(0, 10))
     tk.Frame(reading, bg=BORDER, height=1).pack(fill=tk.X, pady=(6, 10))
@@ -456,7 +460,7 @@ class PSCGUI:
     for column, name in enumerate(("Average", "Peak", "Energy", "Time")):
       stats.columnconfigure(column, weight=1, uniform="stats")
       tk.Label(stats, text=name, bg=CARD, fg=MUTED, font=self.font_small).grid(row=0, column=column, sticky=tk.W)
-      self.stat_values[name] = tk.Label(stats, text="—", bg=CARD, fg=INK, font=(family, 14, "bold"))
+      self.stat_values[name] = tk.Label(stats, bg=CARD, fg=INK, font=(family, 14, "bold"))
       self.stat_values[name].grid(row=1, column=column, sticky=tk.W)
 
     # Trend
@@ -478,6 +482,8 @@ class PSCGUI:
     link.pack(side=tk.RIGHT)
     link.bind("<Button-1>", lambda e: webbrowser.open(PROJECT_URL))
 
+    self._reset_stats()
+
   def _card(self, parent):
     card = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER,
                     highlightcolor=BORDER, padx=16, pady=14)
@@ -489,6 +495,11 @@ class PSCGUI:
     self.total = self.peak = self.energy = 0.0
     self.first_time = self.last_time = None
     self.history.clear()
+    self.power_value.config(text="—")
+    self.time_value.config(text="")
+    for label in self.stat_values.values():
+      label.config(text="—")
+    self._draw_trend()
 
   def _set_status(self, text, color):
     self.status_label.config(text=text)
@@ -568,16 +579,10 @@ class PSCGUI:
 
     file_path = ""
     if self.write_to_file.get():
-      if not self.file_path.get().strip():
-        self.file_path.set("powerspy-%d.csv" % time.time())
-      file_path = self.file_path.get().strip()
+      file_path = self.file_path.get().strip() or default_csv_name()
+      self.file_path.set(file_path)
 
     self._reset_stats()
-    self.power_value.config(text="—")
-    self.time_value.config(text="")
-    for label in self.stat_values.values():
-      label.config(text="—")
-    self._draw_trend()
     self._set_inputs(tk.DISABLED)
     self.action.config(text="Stop", style="Danger.TButton")
     self._set_status("Connecting…", WAIT)
@@ -620,7 +625,7 @@ class PSCGUI:
         if match:
           if not saw_measurement:
             saw_measurement = True
-            self._schedule(self._capture_started, mac_address)
+            self._schedule(self._capture_started)
           self._schedule(self.update_data_fields, float(match.group(1)), float(match.group(2)))
         elif text and not text.startswith("Please wait while connecting"):
           diagnostics.append(text)
@@ -635,12 +640,9 @@ class PSCGUI:
         process.terminate()
         return_code = process.wait(timeout=5)
       if self.powerspy.running and return_code != 0:
-        message = diagnostics[-1] if diagnostics else "PowerSpy CLI capture failed."
-        self.powerspy.last_error = message
-        self._schedule(self._connection_failed, message)
+        self.powerspy.last_error = diagnostics[-1] if diagnostics else "PowerSpy CLI capture failed."
     except Exception as error:
       self.powerspy.last_error = "PowerSpy GUI capture failed: %s" % error
-      self._schedule(self._connection_failed, self.powerspy.last_error)
     finally:
       if process is not None and process.poll() is None:
         try:
@@ -653,46 +655,39 @@ class PSCGUI:
       self._schedule(self._capture_finished)
 
   def _interrupt_cli_process(self):
-    process = getattr(self, "_cli_process", None)
-    if (process is not None and process.poll() is None
-        and not getattr(self, "_cli_interrupt_sent", False)):
+    process = self._cli_process
+    if process is not None and process.poll() is None and not self._cli_interrupt_sent:
       try:
         process.send_signal(signal.SIGINT)
         self._cli_interrupt_sent = True
       except OSError:
         pass
 
+  # Errors are left in powerspy.last_error, which _capture_finished shows
   def _run_capture(self, mac_address, file_path):
     """Connect and capture on a worker thread (Linux and Windows)."""
+    spy = self.powerspy
     try:
-      if self.powerspy.connect((mac_address, 1)) != 0:
-        message = self.powerspy.last_error or "Connection error. Check the device and retry."
-        self._schedule(self._connection_failed, message)
+      if spy.connect((mac_address, 1)) != 0:
+        spy.last_error = spy.last_error or "Connection error. Check the device and retry."
         return
-      if not self.powerspy.running:
+      if not spy.running:
         return
-      if not self.powerspy.init():
-        message = self.powerspy.last_error or "Device cannot be initialized. Check the connection and retry."
-        self._schedule(self._connection_failed, message)
+      if not spy.init():
+        spy.last_error = spy.last_error or "Device cannot be initialized. Check the connection and retry."
         return
-      if not self.powerspy.running:
+      if not spy.running:
         return
-      self._schedule(self._capture_started, mac_address)
-      self.powerspy.rt_capture(file_path, measurement_callback=self._measurement_received)
+      self._schedule(self._capture_started)
+      spy.rt_capture(file_path, measurement_callback=self._measurement_received)
     except Exception as error:
-      self.powerspy.last_error = "PowerSpy operation failed: %s" % error
-      self._schedule(self._connection_failed, self.powerspy.last_error)
+      spy.last_error = "PowerSpy operation failed: %s" % error
     finally:
       self.powerspy.close()
       self._schedule(self._capture_finished)
 
-  def _capture_started(self, mac_address):
+  def _capture_started(self):
     self._set_status("Live", LIVE)
-
-  def _connection_failed(self, message):
-    self.powerspy.last_error = message
-    self._set_message(message)
-    self._set_status("Error", DANGER)
 
   def _measurement_received(self, timestamp, power):
     self._schedule(self.update_data_fields, timestamp, power)
@@ -715,7 +710,7 @@ class PSCGUI:
 
   def toggle_file_selector(self):
     if self.write_to_file.get() and not self.file_path.get().strip():
-      self.file_path.set("powerspy-%d.csv" % time.time())
+      self.file_path.set(default_csv_name())
     self._set_inputs(tk.NORMAL)
 
   def select_file(self):
@@ -752,7 +747,6 @@ class PowerSpy:
     # Try to connect 3 times before raising error
     for attempt in range(3):
       self.last_error = None
-      self.rx.clear()
       try:
         self.sock = self.socket_factory()
         logging.debug("Connecting to %s..." % str(address))
@@ -849,11 +843,7 @@ class PowerSpy:
   def get_frequency(self):
     self.sendCmd(CMD_FREQUENCY)
     f = int(self.recvCmd()[1:], 16)
-    if self.hw_version == "02":
-      self.frequency = 1000000.0 / f
-    else:
-      self.frequency = 1382400.0 / f
-    return self.frequency
+    self.frequency = (1000000.0 if self.hw_version == "02" else 1382400.0) / f
 
   # check and get PowerSpy parameters
   def init(self):
@@ -994,10 +984,9 @@ class PowerSpy:
           print("# Timestamp\tW")
 
       if filename:
-        new_file = not os.path.exists(filename) or os.path.getsize(filename) == 0
         csv_file = open(filename, "a", newline='')
         writer = csv.writer(csv_file, delimiter=';', quoting=csv.QUOTE_NONE)
-        if new_file:
+        if csv_file.tell() == 0:
           writer.writerow(["Timestamp", "Power"])
 
       samples = []
@@ -1083,7 +1072,7 @@ if __name__ == '__main__':
   parser.add_argument('-g', '--gui', action='store_true', help='GUI interface.')
   parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
   parser.add_argument('-a', '--allmetrics', action='store_true', help='Show all metrics.')
-  parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy-"+str(int(time.time()))+".csv", default=None,
+  parser.add_argument('-f', '--file', type=str, nargs='?', const=default_csv_name(), default=None,
   help='Name of csv file to store power data. If used without argument, a default name is assigned.')
 
   args = parser.parse_args()
@@ -1111,10 +1100,10 @@ if __name__ == '__main__':
 
     dev = PowerSpy()
 
-    # First CTRL-C stops the capture cleanly, a second one quits immediately
+    # First CTRL-C stops the capture cleanly, a second one kills the process
     def stop_capture(signum, frame):
       dev.running = False
-      signal.signal(signal.SIGINT, signal.default_int_handler)
+      signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGINT, stop_capture)
 
     # RFCOMM channel 1 is the PowerSpy default (macOS discovers it through SDP)
@@ -1130,9 +1119,6 @@ if __name__ == '__main__':
       dev.last_error = "Device initialization failed: %s" % error
       logging.error(dev.last_error)
       initialized = False
-    except KeyboardInterrupt:
-      dev.close()
-      sys.exit(130)
     if not initialized:
       detail = ": %s" % dev.last_error if dev.last_error else ""
       print("Device cannot be initialized%s" % detail)
@@ -1141,8 +1127,6 @@ if __name__ == '__main__':
 
     try:
       captured = dev.rt_capture(args.file or "", allmetrics=args.allmetrics)
-    except KeyboardInterrupt:
-      sys.exit(130)
     except Exception as error:
       dev.last_error = "PowerSpy capture failed: %s" % error
       logging.error(dev.last_error)
