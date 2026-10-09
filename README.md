@@ -8,6 +8,8 @@ PowerSpyCli supports Windows, Linux, and macOS (13 or later) with Python 3. The 
 
 Just download the ```powerspycli.py``` file and run it.
 
+On every system, pair the PowerSpy 2 in the operating system's Bluetooth settings before the first run.
+
 ### macOS setup
 
 PowerSpy 2 uses Bluetooth Classic Serial Port Profile (SPP). Python on macOS needs the PyObjC bridge to access Apple's native RFCOMM API:
@@ -44,7 +46,7 @@ To run PowerSpyCli GUI version, just run the software with the ```-g``` argument
 python powerspycli.py -g
 ```
 
-The GUI version uses [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) for theming, and hence this modules needs to be installed first. For instance with pip: ```pip install ttkbootstrap```. 
+The GUI version only uses Tkinter, which comes with Python. Some Linux distributions ship it as a separate package (e.g., `python3-tk`), and so does Homebrew Python on macOS (`python-tk`).
 
 ![PowerSpyCli GUI](powerspycli-gui.png)
 

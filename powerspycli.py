@@ -29,51 +29,27 @@ import struct  # conversion of type
 import re      # matching responses
 import math    # sqrt
 import signal  # signal handler
-import sys     # system exit and sys.stdout.write
 import time    # sleep/time
 import errno   # IOError numbers
-import codecs  # for hex decoder
 import csv     # for csv handling
-import contextlib
 import threading
 
-# All powerspy commands
+# PowerSpy commands used here (see specifications/)
 CMD_ID = '?'
-CMD_CAPTURE_LENGTH = 'L'
-CMD_TRIGGER_CONF = 'T'
-CMD_RESET = 'R'
 CMD_EEPROM_READ = 'V'
-CMD_EEPROM_WRITE = 'W'
 CMD_START = 'S'
 CMD_CANCEL = 'C'
 CMD_FREQUENCY = 'F'
-CMD_ASCII = 'A'
-CMD_BINARY = 'B'
 CMD_RT = 'J'
 CMD_RT_STOP = 'Q'
-CMD_RTC_SET = 'E'
-CMD_RTC_GET = 'G'
-CMD_LOG_PERIOD = 'M'
-CMD_LOG_START = 'O'
-CMD_LOG_STOP = 'P'
-CMD_FILE_LIST = 'U'
-CMD_FILE_DEL = 'Y'
-CMD_FILE_GET = 'X'
 
 # Generic responses
 CMD_OK = 'K'
 CMD_FAILED = 'Z'
 
-# Variable to show all metrisc or not
-allmetrics = False
-
-# Variable to identify if GUI or CLI running
-is_gui = False
-
 # Constants
 DEFAULT_TIMEOUT = 3.0 # secs (float allowed, timeout to receive response from PowerSpy, except in realtime mode)
-
-decode_hex = codecs.getdecoder("hex_codec")
+MAX_MISSED_READS = 3  # stop realtime capture after this many reads in a row without data
 
 #-------------------------------------------------------------------------------------------
 # Bluetooth transports
@@ -95,18 +71,6 @@ IOBLUETOOTH_STATUS_NAMES = {
   -536870184: "Bluetooth device is not ready",
   -536870163: "Bluetooth device is not responding",
 }
-
-
-def _macos_worker_autorelease_pool():
-  """Give PyObjC calls made by a secondary Python thread a Cocoa pool."""
-  if sys.platform != "darwin":
-    return contextlib.nullcontext()
-  try:
-    import objc
-  except ImportError:
-    # The transport loader will provide the actionable dependency error.
-    return contextlib.nullcontext()
-  return objc.autorelease_pool()
 
 
 def _describe_iobluetooth_status(status):
@@ -377,157 +341,246 @@ def create_rfcomm_socket():
 # GUI class
 #-------------------------------------------------------------------------------------------
 
+# GUI colors, close to Joular Energy Meter
+BG = "#DCE5E7"
+CARD = "#F8FAFA"
+BORDER = "#C3CED1"
+INK = "#17222A"
+MUTED = "#5E6E76"
+ACCENT = "#1E7471"
+ACCENT_DARK = "#165956"
+DANGER = "#B03A22"
+DANGER_DARK = "#8C2E1B"
+LIVE = "#2E8B57"
+WAIT = "#C98A1B"
+
+PROJECT_URL = "https://github.com/joular/powerspycli"
+
+# Smallest 1, 2 or 5 times a power of ten that is >= value (trend scale)
+def nice_ceiling(value):
+  if value <= 0:
+    return 1
+  magnitude = 10 ** math.floor(math.log10(value))
+  for k in (1, 2, 5, 10):
+    if value <= k * magnitude:
+      return k * magnitude
+
 class PSCGUI:
   def __init__(self, powerspy_):
     self.powerspy = powerspy_
-    self.root = ttk.Window(themename="flatly")
-    self.root.title("PowerSpyGUI")
+    self.thread = None
+    self.history = deque(maxlen=120) # last 2 minutes at one value per second
+    self._reset_stats()
 
-    # Initialize theme (default is light)
-    self.current_theme = "flatly"  # Light theme
-    self.dark_theme = "darkly"  # Dark theme
+    self.root = tk.Tk()
+    self.root.title("PowerSpyCli")
+    self.root.configure(bg=BG)
+    self.root.minsize(460, 0)
 
-    # Main container frame
-    self.main_frame = ttk.Frame(self.root, padding="10")
-    self.main_frame.pack(fill=tk.BOTH, expand=True)
+    family = font.nametofont("TkDefaultFont").actual("family")
+    self.font_small = (family, 10)
+    normal, bold = (family, 12), (family, 12, "bold")
 
-    # Title
-    self.title_label = ttk.Label(self.main_frame, text="PowerSpyCli GUI", font=("Arial", 14))
-    self.title_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.E)
+    style = ttk.Style(self.root)
+    style.theme_use("clam") # the built-in theme that honors custom colors on every OS
+    style.configure("TEntry", fieldbackground="white", foreground=INK, bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER, padding=5)
+    style.map("TEntry", bordercolor=[("focus", ACCENT)], lightcolor=[("focus", ACCENT)],
+              fieldbackground=[("disabled", CARD)], foreground=[("disabled", MUTED)])
+    style.configure("TCheckbutton", background=CARD, foreground=INK, font=normal,
+                    indicatorbackground="white", indicatorforeground="white")
+    style.map("TCheckbutton", background=[("active", CARD)], foreground=[("disabled", MUTED)],
+              indicatorbackground=[("selected", ACCENT), ("disabled", CARD)])
+    style.configure("TButton", background=CARD, foreground=INK, bordercolor=BORDER, lightcolor=CARD,
+                    darkcolor=CARD, focuscolor=CARD, font=normal, padding=(10, 4))
+    style.map("TButton", background=[("disabled", CARD), ("active", BG)], foreground=[("disabled", MUTED)])
+    for name, color, dark in (("Accent.TButton", ACCENT, ACCENT_DARK), ("Danger.TButton", DANGER, DANGER_DARK)):
+      style.configure(name, background=color, foreground="white", bordercolor=color, lightcolor=color,
+                      darkcolor=color, focuscolor=color, font=(family, 13, "bold"), padding=(10, 9))
+      style.map(name, background=[("disabled", BORDER), ("active", dark)], foreground=[("disabled", MUTED)],
+                bordercolor=[("disabled", BORDER), ("active", dark)], lightcolor=[("disabled", BORDER), ("active", dark)],
+                darkcolor=[("disabled", BORDER), ("active", dark)])
 
-    # Theme Toggle Button (with icon)
-    self.theme_button = ttk.Button(
-      self.main_frame,
-      text="🌙",  # Moon icon for dark theme
-      command=self.toggle_theme,
-      bootstyle=(LINK, OUTLINE),
-      width=3,
-      cursor="hand2"
-    )
-    self.theme_button.grid(row=0, column=1, padx=5, pady=5, sticky=tk.E)
+    main = tk.Frame(self.root, bg=BG, padx=16, pady=14)
+    main.pack(fill=tk.BOTH, expand=True)
 
-    # MAC Address Entry
-    self.mac_frame = ttk.Labelframe(self.main_frame, text="MAC Address", padding="10")
-    self.mac_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+    # Header: title and connection status
+    header = tk.Frame(main, bg=BG)
+    header.pack(fill=tk.X)
+    tk.Label(header, text="PowerSpyCli", bg=BG, fg=INK, font=(family, 20, "bold")).pack(side=tk.LEFT)
+    self.status_label = tk.Label(header, text="Idle", bg=BG, fg=INK, font=normal)
+    self.status_label.pack(side=tk.RIGHT)
+    self.status_dot = tk.Canvas(header, width=12, height=12, bg=BG, highlightthickness=0)
+    self.status_dot.pack(side=tk.RIGHT, padx=(0, 6))
+    self.dot = self.status_dot.create_oval(1, 1, 11, 11, fill=MUTED, outline="")
 
-    ttk.Label(self.mac_frame, text="Enter MAC Address:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-    self.mac_entry = ttk.Entry(self.mac_frame, width=25)
-    self.mac_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
-
-    # File Options
-    self.file_path = tk.StringVar()
-    self.file_frame = ttk.Labelframe(self.main_frame, text="File Options", padding="10")
-    self.file_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+    # Device and recording
+    device = self._card(main)
+    device.columnconfigure(1, weight=1)
+    tk.Label(device, text="MAC address", bg=CARD, fg=INK, font=normal).grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+    self.mac_entry = ttk.Entry(device, font=normal)
+    self.mac_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW)
+    self.mac_entry.bind("<Key>", lambda e: self._set_message())
+    self.mac_entry.bind("<Return>", lambda e: self.toggle_capture())
 
     self.write_to_file = tk.BooleanVar(value=False)
-    self.file_checkbox = ttk.Checkbutton(
-      self.file_frame, text="Write to file", variable=self.write_to_file, command=self.toggle_file_selector
-    )
-    self.file_checkbox.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+    self.file_path = tk.StringVar()
+    self.record_check = ttk.Checkbutton(device, text="Record to", variable=self.write_to_file,
+                                        command=self.toggle_file_selector)
+    self.record_check.grid(row=1, column=0, sticky=tk.W, pady=(10, 0))
+    self.file_entry = ttk.Entry(device, textvariable=self.file_path, font=normal, state=tk.DISABLED)
+    self.file_entry.grid(row=1, column=1, sticky=tk.EW, pady=(10, 0))
+    self.file_button = ttk.Button(device, text="Choose…", command=self.select_file, state=tk.DISABLED)
+    self.file_button.grid(row=1, column=2, sticky=tk.E, padx=(8, 0), pady=(10, 0))
 
-    self.file_selector_button = ttk.Button(
-      self.file_frame, text="Select File", command=self.select_file, bootstyle=INFO, state=DISABLED, cursor="hand2"
-    )
-    self.file_selector_button.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    self.message = tk.Label(device, bg=CARD, fg=DANGER, font=normal, justify=tk.LEFT, anchor=tk.W, wraplength=400)
+    self.message.grid(row=2, column=0, columnspan=3, sticky=tk.EW, pady=(10, 0))
+    self.message.grid_remove()
 
-    self.file_label = ttk.Label(self.file_frame, text="File: none", bootstyle=SECONDARY)
-    self.file_label.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+    # Live reading and session statistics
+    reading = self._card(main)
+    top = tk.Frame(reading, bg=CARD)
+    top.pack(fill=tk.X)
+    tk.Label(top, text="Power", bg=CARD, fg=MUTED, font=normal).pack(side=tk.LEFT)
+    self.time_value = tk.Label(top, text="", bg=CARD, fg=MUTED, font=normal)
+    self.time_value.pack(side=tk.RIGHT)
+    value = tk.Frame(reading, bg=CARD)
+    value.pack(fill=tk.X)
+    self.power_value = tk.Label(value, text="—", bg=CARD, fg=INK, font=(family, 44, "bold"))
+    self.power_value.pack(side=tk.LEFT)
+    tk.Label(value, text="W", bg=CARD, fg=MUTED, font=(family, 20)).pack(side=tk.LEFT, anchor=tk.S, padx=(6, 0), pady=(0, 10))
+    tk.Frame(reading, bg=BORDER, height=1).pack(fill=tk.X, pady=(6, 10))
+    stats = tk.Frame(reading, bg=CARD)
+    stats.pack(fill=tk.X)
+    self.stat_values = {}
+    for column, name in enumerate(("Average", "Peak", "Energy", "Time")):
+      stats.columnconfigure(column, weight=1, uniform="stats")
+      tk.Label(stats, text=name, bg=CARD, fg=MUTED, font=self.font_small).grid(row=0, column=column, sticky=tk.W)
+      self.stat_values[name] = tk.Label(stats, text="—", bg=CARD, fg=INK, font=(family, 14, "bold"))
+      self.stat_values[name].grid(row=1, column=column, sticky=tk.W)
 
-    # Control Buttons
-    self.control_frame = ttk.Frame(self.main_frame, padding="10")
-    self.control_frame.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+    # Trend
+    trend = self._card(main)
+    tk.Label(trend, text="Last 2 minutes", bg=CARD, fg=MUTED, font=normal).pack(anchor=tk.W)
+    self.trend = tk.Canvas(trend, height=110, bg=CARD, highlightthickness=0)
+    self.trend.pack(fill=tk.X, pady=(6, 0))
+    self.trend.bind("<Configure>", lambda e: self._draw_trend())
 
-    self.start_button = ttk.Button(
-      self.control_frame, text="Start", command=self.start_process, bootstyle=SUCCESS, width=10, cursor="hand2"
-    )
-    self.start_button.grid(row=0, column=0, padx=5, pady=5, sticky=tk.EW)
+    # Start/Stop
+    self.action = ttk.Button(main, text="Start", style="Accent.TButton", command=self.toggle_capture, cursor="hand2")
+    self.action.pack(fill=tk.X, pady=(14, 0))
 
-    self.stop_button = ttk.Button(
-      self.control_frame, text="Stop", command=self.stop_process, bootstyle=DANGER, width=10, state=DISABLED,
-      cursor="hand2"
-    )
-    self.stop_button.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+    # Footer
+    footer = tk.Frame(main, bg=BG)
+    footer.pack(fill=tk.X, pady=(12, 0))
+    tk.Label(footer, text="© 2021-2026 Adel Noureddine", bg=BG, fg=MUTED, font=self.font_small).pack(side=tk.LEFT)
+    link = tk.Label(footer, text="github.com/joular/powerspycli", bg=BG, fg=ACCENT, font=self.font_small, cursor="hand2")
+    link.pack(side=tk.RIGHT)
+    link.bind("<Button-1>", lambda e: webbrowser.open(PROJECT_URL))
 
-    # Status
-    self.status_frame = ttk.Labelframe(self.main_frame, text="Status", padding="10")
-    self.status_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+  def _card(self, parent):
+    card = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER,
+                    highlightcolor=BORDER, padx=16, pady=14)
+    card.pack(fill=tk.X, pady=(12, 0))
+    return card
 
-    self.status_label = ttk.Label(self.status_frame, text="Status: Idle", bootstyle=INFO)
-    self.status_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+  def _reset_stats(self):
+    self.count = 0
+    self.total = self.peak = self.energy = 0.0
+    self.first_time = self.last_time = None
+    self.history.clear()
 
-    #  Data Fields
-    self.data_frame = ttk.Labelframe(self.main_frame, text="Power values", padding="10")
-    self.data_frame.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
+  def _set_status(self, text, color):
+    self.status_label.config(text=text)
+    self.status_dot.itemconfig(self.dot, fill=color)
 
-    self.timestamp_label = ttk.Label(self.data_frame, text="Timestamp:", bootstyle=SECONDARY)
-    self.timestamp_value = ttk.Label(self.data_frame, text="", bootstyle=SECONDARY)
-    self.power_label = ttk.Label(self.data_frame, text="Power (Watts):", bootstyle=SECONDARY)
-    self.power_value = ttk.Label(self.data_frame, text="", bootstyle=INFO)
-
-    self.timestamp_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
-    self.timestamp_value.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
-    self.power_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-    self.power_value.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
-
-    #  Data Fields
-    self.info_frame = ttk.Labelframe(self.main_frame, text="Info", padding="10")
-    self.info_frame.grid(row=6, column=0, columnspan=2, padx=5, pady=5, sticky=tk.EW)
-
-    self.info_label = ttk.Label(self.info_frame, text="PowerSpyCli GUI - Copyright (c) 2021-2026 Adel Noureddine",
-                                bootstyle=SECONDARY)
-    self.info_label.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
-
-    # Clickable link label
-    self.link_label = ttk.Label(self.info_frame, text="https://github.com/joular/powerspycli", bootstyle=SECONDARY,
-                                cursor="hand2")
-    self.link_label.grid(row=1, column=0, padx=10, pady=5, sticky=tk.E)
-    self.link_label.bind("<Button-1>", lambda e: self.open_link("https://github.com/joular/powerspycli"))
-
-  def toggle_theme(self):
-    """Toggle between light and dark themes."""
-    if self.current_theme == "flatly":
-      self.current_theme = "darkly"
-      self.theme_button.config(text="☀️")  # Sun icon for light theme
+  def _set_message(self, text=""):
+    self.message.config(text=text)
+    if text:
+      self.message.grid()
     else:
-      self.current_theme = "flatly"
-      self.theme_button.config(text="🌙")  # Moon icon for dark theme
+      self.message.grid_remove()
 
-    # Update the theme
-    self.root.style.theme_use(self.current_theme)
+  def _set_inputs(self, state):
+    self.mac_entry.config(state=state)
+    self.record_check.config(state=state)
+    file_state = state if self.write_to_file.get() else tk.DISABLED
+    self.file_entry.config(state=file_state)
+    self.file_button.config(state=file_state)
+
+  def _draw_trend(self):
+    c = self.trend
+    c.delete("all")
+    width, height = c.winfo_width(), c.winfo_height()
+    left, top, bottom = 44, 8, height - 8
+    scale = nice_ceiling(max(self.history, default=0))
+    c.create_line(left, top, width, top, fill=BORDER, dash=(2, 4))
+    c.create_line(left, bottom, width, bottom, fill=BORDER)
+    c.create_text(left - 8, top, text="%g W" % scale, anchor=tk.E, fill=MUTED, font=self.font_small)
+    c.create_text(left - 8, bottom, text="0", anchor=tk.E, fill=MUTED, font=self.font_small)
+    if len(self.history) > 1:
+      # Newest value on the right edge
+      step = (width - left) / (self.history.maxlen - 1)
+      start = width - (len(self.history) - 1) * step
+      points = []
+      for i, power in enumerate(self.history):
+        points += [start + i * step, bottom - power / scale * (bottom - top)]
+      c.create_line(points, fill=ACCENT, width=2)
 
   def update_data_fields(self, timestamp, power):
-    """Update displayed timestamp and power values."""
-    self.timestamp_value.config(text=str(timestamp))
-    self.power_value.config(text=str(power))
+    """Show a new measurement and update the session statistics."""
+    if self.first_time is None:
+      self.first_time = timestamp
+    # Energy over the time since the previous value (one second for the first one)
+    self.energy += power * (timestamp - self.last_time if self.last_time else 1.0)
+    self.last_time = timestamp
+    self.count += 1
+    self.total += power
+    self.peak = max(self.peak, power)
+    self.history.append(power)
+
+    elapsed = int(timestamp - self.first_time)
+    self.power_value.config(text="%.3f" % power)
+    self.time_value.config(text=time.strftime("%H:%M:%S", time.localtime(timestamp)))
+    self.stat_values["Average"].config(text="%.3f W" % (self.total / self.count))
+    self.stat_values["Peak"].config(text="%.3f W" % self.peak)
+    self.stat_values["Energy"].config(text="%.1f J" % self.energy)
+    self.stat_values["Time"].config(text="%d:%02d:%02d" % (elapsed // 3600, elapsed // 60 % 60, elapsed % 60))
+    self._draw_trend()
 
   def _schedule(self, callback, *args):
     """Marshal a worker-thread callback onto Tk's main thread."""
     self.root.after(0, callback, *args)
 
+  def toggle_capture(self):
+    if self.thread is not None and self.thread.is_alive():
+      self.stop_process()
+    else:
+      self.start_process()
+
   def start_process(self):
-    mac_address = self.mac_entry.get()
-    if not is_valid_mac(mac_address):
-      messagebox.showerror("Invalid MAC Address", "Please enter a valid MAC address.")
+    mac_address = normalize_mac(self.mac_entry.get())
+    if mac_address is None:
+      self._set_message("Enter a valid MAC address, for example 00:11:22:33:44:55.")
+      self.mac_entry.focus_set()
       return
-
-    if getattr(self, "thread", None) is not None and self.thread.is_alive():
-      return
-
-    self.start_button.config(state=DISABLED)
-    self.stop_button.config(state=NORMAL)
-    self.mac_entry.config(state=DISABLED)
-    self.status_label.config(text="Status: Connecting...", bootstyle=WARNING)
-    self.root.update_idletasks()
+    self._set_message()
 
     file_path = ""
     if self.write_to_file.get():
-      file_path = self.file_path.get()
-      if not file_path:
-        timestamp = int(time.time())
-        file_path = f"powerspy-{timestamp}.csv"
-        self.file_path.set(file_path)
-        messagebox.showinfo("Default File Created", f"No file selected. Using default file: {file_path}")
-      self.file_label.config(text=f"Saving to: {file_path}", bootstyle=SUCCESS)
+      if not self.file_path.get().strip():
+        self.file_path.set("powerspy-%d.csv" % time.time())
+      file_path = self.file_path.get().strip()
+
+    self._reset_stats()
+    self.power_value.config(text="—")
+    self.time_value.config(text="")
+    for label in self.stat_values.values():
+      label.config(text="—")
+    self._draw_trend()
+    self._set_inputs(tk.DISABLED)
+    self.action.config(text="Stop", style="Danger.TButton")
+    self._set_status("Connecting…", WAIT)
 
     self.powerspy.running = True
     self.powerspy.last_error = None
@@ -568,7 +621,7 @@ class PSCGUI:
           if not saw_measurement:
             saw_measurement = True
             self._schedule(self._capture_started, mac_address)
-          self._schedule(self.update_data_fields, match.group(1), match.group(2))
+          self._schedule(self.update_data_fields, float(match.group(1)), float(match.group(2)))
         elif text and not text.startswith("Please wait while connecting"):
           diagnostics.append(text)
 
@@ -610,11 +663,7 @@ class PSCGUI:
         pass
 
   def _run_capture(self, mac_address, file_path):
-    """Own connection and capture on one thread for macOS run-loop delivery."""
-    with _macos_worker_autorelease_pool():
-      self._run_capture_with_transport(mac_address, file_path)
-
-  def _run_capture_with_transport(self, mac_address, file_path):
+    """Connect and capture on a worker thread (Linux and Windows)."""
     try:
       if self.powerspy.connect((mac_address, 1)) != 0:
         message = self.powerspy.last_error or "Connection error. Check the device and retry."
@@ -623,7 +672,8 @@ class PSCGUI:
       if not self.powerspy.running:
         return
       if not self.powerspy.init():
-        self._schedule(self._connection_failed, "Device cannot be initialized. Check the connection and retry.")
+        message = self.powerspy.last_error or "Device cannot be initialized. Check the connection and retry."
+        self._schedule(self._connection_failed, message)
         return
       if not self.powerspy.running:
         return
@@ -637,36 +687,36 @@ class PSCGUI:
       self._schedule(self._capture_finished)
 
   def _capture_started(self, mac_address):
-    self.status_label.config(text=f"Status: Listening to PowerSpy [{mac_address}]", bootstyle=SUCCESS)
+    self._set_status("Live", LIVE)
 
   def _connection_failed(self, message):
-    self.status_label.config(text=message, bootstyle=DANGER)
+    self.powerspy.last_error = message
+    self._set_message(message)
+    self._set_status("Error", DANGER)
 
   def _measurement_received(self, timestamp, power):
-    self._schedule(self.update_data_fields, f"{timestamp:0.0f}", f"{power:.3f}")
+    self._schedule(self.update_data_fields, timestamp, power)
 
   def _capture_finished(self):
-    was_stopped = not self.powerspy.running
     self.powerspy.running = False
-    self.start_button.config(state=NORMAL)
-    self.stop_button.config(state=DISABLED)
-    self.mac_entry.config(state=NORMAL)
+    self._set_inputs(tk.NORMAL)
+    self.action.config(text="Start", style="Accent.TButton", state=tk.NORMAL)
     if self.powerspy.last_error:
-      self.status_label.config(text=self.powerspy.last_error, bootstyle=DANGER)
-    elif was_stopped and "error" not in self.status_label.cget("text").lower():
-      self.status_label.config(text="Status: Stopped", bootstyle=DANGER)
+      self._set_message(self.powerspy.last_error)
+      self._set_status("Error", DANGER)
+    else:
+      self._set_status("Stopped", MUTED)
 
   def stop_process(self):
-    self.status_label.config(text="Status: Stopping...", bootstyle=WARNING)
-    self.stop_button.config(state=DISABLED)
+    self._set_status("Stopping…", WAIT)
+    self.action.config(text="Stopping…", state=tk.DISABLED)
     self.powerspy.running = False
     self._interrupt_cli_process()
 
   def toggle_file_selector(self):
-    if self.write_to_file.get():
-      self.file_selector_button.config(state=NORMAL)
-    else:
-      self.file_selector_button.config(state=DISABLED)
+    if self.write_to_file.get() and not self.file_path.get().strip():
+      self.file_path.set("powerspy-%d.csv" % time.time())
+    self._set_inputs(tk.NORMAL)
 
   def select_file(self):
     file_path = filedialog.asksaveasfilename(defaultextension=".csv",
@@ -685,27 +735,24 @@ class PowerSpy:
   def __init__ (self, socket_factory=create_rfcomm_socket):
     self.sock = None
     self.socket_factory = socket_factory
+    self.rx = bytearray() # received bytes not yet returned as a frame
     self.last_error = None
     self.status = None
-    self.pll_locked = None
-    self.trigger_status = None
-    self.sw_version = None
     self.hw_version = None
-    self.hw_serial = None
-    self.uscale_factory = self.iscale_factory = self.pscale_factory = None
-    self.uscale_current = self.iscale_current = self.pscale_current = None
+    self.uscale = self.iscale = self.pscale = None
     self.frequency = None
     self.max_avg_period = None
     self.running = True
 
   def connect(self, address):
-    if self.sock != None:
+    if self.sock is not None:
       logging.warning("Already connected")
       return 1
 
     # Try to connect 3 times before raising error
     for attempt in range(3):
       self.last_error = None
+      self.rx.clear()
       try:
         self.sock = self.socket_factory()
         logging.debug("Connecting to %s..." % str(address))
@@ -722,56 +769,60 @@ class PowerSpy:
           except Exception:
             pass
           self.sock = None
-        if isinstance(error, (ImportError, PermissionError)):
+        if isinstance(error, (ImportError, PermissionError)) or not self.running:
           break
         if attempt < 2:
           time.sleep(3) # Sleep 3 seconds before retrying
     return 1
 
   def sendCmd(self, c):
-    assert(self.sock != None)
+    assert(self.sock is not None)
     # All powerspy commands are tagged with < >
     buf = '<%s>' % c
     logging.debug("SEND: %s" % buf)
     self.sock.sendall(buf.encode())
 
-  def recvCmd(self, size = 1):
-    assert(self.sock != None)
-    # All powerspy commands are tagged with < >
-    buf = ""
+  # Return the body of the next <...> frame, or "" on timeout or error.
+  # Bytes after the frame are kept for the next call.
+  def recvCmd(self):
+    assert(self.sock is not None)
     while True:
+      end = self.rx.find(b'>')
+      if end >= 0:
+        frame = self.rx[:end]
+        del self.rx[:end + 1]
+        start = frame.rfind(b'<')
+        if start < 0:
+          continue # tail of a frame we only got partially, drop it
+        buf = frame[start + 1:].decode('ascii', 'replace')
+        logging.debug("RECV: <%s>" % buf)
+        return buf
       try:
-        r = self.sock.recv(size)
-        # then read one by one
-        size = 1
-      # TODO: fix in case of multiple ctrl+c
+        r = self.sock.recv(256)
       except socket.timeout as err:
         logging.warning("Socket timeout while receiving command: %s" % err)
-        break
+        return ""
       except OSError as err:
         if err.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
           logging.debug("EAGAIN or EWOULDBLOCK due to signal interrupt. Try to quit.")
           self.running = False
         else:
           logging.error("Socket error while receiving command: %s" % err)
-        break
+        return ""
       if not r:
         logging.error("PowerSpy closed the Bluetooth connection")
         self.running = False
-        break
-      # FIXME what to do for multiple message? keep it in buffer...
-      buf = "%s%s" % (buf,r.decode())
-      mat = re.search('<(.*)>', buf, re.MULTILINE)
-      if mat:
-        buf = mat.group(1)
-        logging.debug("RECV: <%s>" % buf)
-        break
-    return buf
+        return ""
+      self.rx.extend(r)
 
   # Check identity
   def checkID(self):
     self.sendCmd(CMD_ID)
-    s = self.recvCmd(23)
+    # Skip realtime frames left over if a previous run did not stop them
+    for _ in range(5):
+      s = self.recvCmd()
+      if not s or s.startswith('POWERSPY'):
+        break
     mat = re.match('POWERSPY(.)(.{12})', s)
     if not mat:
       # Unable to process response for ID
@@ -783,61 +834,25 @@ class PowerSpy:
     # 'C': Acquisition complete
     # 'T': FIXME Undocumented status, triggered? Realtime activated?
     extra = mat.group(2)
-    self.pll_locked     = extra[0:2]  # PLL Locked (0x01 if locked, 0x00 if not)
-    self.trigger_status = extra[2:4]  # Trigger status (2 characters)
-    self.sw_version     = extra[4:6]  # SW version (1 byte / 2 characters)
-    self.hw_version     = extra[6:8]  # HW version (1 byte / 2 characters)
-    self.hw_serial      = extra[8:12] # HW serial number (2 bytes / 4 characters)
-    logging.debug('status: %s pll_locked: %s trigger_status: %s sw_version: %s hw_version: %s hw_serial: %s' % (self.status, self.pll_locked, self.trigger_status, self.sw_version, self.hw_version, self.hw_serial))
+    self.hw_version = extra[6:8]
+    logging.debug('status: %s pll_locked: %s trigger_status: %s sw_version: %s hw_version: %s hw_serial: %s' % (self.status, extra[0:2], extra[2:4], extra[4:6], extra[6:8], extra[8:12]))
     return True
 
-  # Read EEPROM float (values: must be an array of 4 elements)
-  def get_eeprom_float(self, values):
+  # Read a 32 bits float (REAL4, little-endian) stored in 4 EEPROM bytes from address
+  def get_eeprom_float(self, address):
     val = ""
-    for i in values:
-      self.sendCmd(CMD_EEPROM_READ + i)
-      val += self.recvCmd(4)
-    # Format 32 bits, REAL4
-    # < indicates little-endian encoding
-    f = struct.unpack('<f', decode_hex(val)[0])
-    return f[0]
-
-  # Factory correction voltage coefficient
-  def get_uscale_factory(self):
-    self.uscale_factory = self.get_eeprom_float(["02", "03", "04", "05"])
-    return self.uscale_factory
-
-  # Factory correction current coefficient
-  def get_iscale_factory(self):
-    self.iscale_factory = self.get_eeprom_float(["06", "07", "08", "09"])
-    return self.iscale_factory
-
-  # Actual correction voltage coefficient
-  def get_uscale_current(self):
-    self.uscale_current = self.get_eeprom_float(["0E", "0F", "10", "11"])
-    return self.uscale_current
-
-  # Actual correction current coefficient
-  def get_iscale_current(self):
-    self.iscale_current = self.get_eeprom_float(["12", "13", "14", "15"])
-    return self.iscale_current
-
-  def calc_pscale(self):
-    if self.pscale_factory == None:
-      if self.uscale_factory != None and self.iscale_factory != None:
-        self.pscale_factory = self.uscale_factory * self.iscale_factory
-    if self.pscale_current == None:
-      if self.uscale_current != None and self.iscale_current != None:
-        self.pscale_current = self.uscale_current * self.iscale_current
+    for i in range(address, address + 4):
+      self.sendCmd("%s%02X" % (CMD_EEPROM_READ, i))
+      val += self.recvCmd()
+    return struct.unpack('<f', bytes.fromhex(val))[0]
 
   def get_frequency(self):
     self.sendCmd(CMD_FREQUENCY)
-    f = self.recvCmd(7)
-    f = struct.unpack('>H', decode_hex(f[1:])[0])
+    f = int(self.recvCmd()[1:], 16)
     if self.hw_version == "02":
-      self.frequency = 1000000.0 / f[0]
+      self.frequency = 1000000.0 / f
     else:
-      self.frequency = 1382400.0 / f[0]
+      self.frequency = 1382400.0 / f
     return self.frequency
 
   # check and get PowerSpy parameters
@@ -854,28 +869,21 @@ class PowerSpy:
       self.acquisition_stop()
     self.get_frequency()
     logging.debug("frequency:%.8f" % (self.frequency))
-    # Retrieve device parameters
-    self.get_uscale_factory()
-    self.get_iscale_factory()
-    self.get_uscale_current()
-    self.get_iscale_current()
-    self.calc_pscale()
-    logging.debug("uscale_factory:%.8f iscale_factory:%.8f pscale_factory:%.8f" % (self.uscale_factory, self.iscale_factory, self.pscale_factory))
-    logging.debug("uscale_current:%.8f iscale_current:%.8f pscale_current:%.8f" % (self.uscale_current, self.iscale_current, self.pscale_current))
-    if self.hw_version == "02":
-      # PowerSpy v1 supports 100 averaging periods.
-      self.max_avg_period = 100
-    else:
-      # PowerSpy v2 (assuming all other versions) supports 65535 averaging periods.
-      self.max_avg_period = 65535
+    # Actual correction coefficients (same as factory ones unless the user recalibrated)
+    self.uscale = self.get_eeprom_float(0x0E)
+    self.iscale = self.get_eeprom_float(0x12)
+    self.pscale = self.uscale * self.iscale
+    logging.debug("uscale:%.8f iscale:%.8f pscale:%.8f" % (self.uscale, self.iscale, self.pscale))
+    # PowerSpy v1 (hw_version "02") supports 100 averaging periods, v2 65535
+    self.max_avg_period = 100 if self.hw_version == "02" else 65535
     return True
 
   # deinitialize the PowerSpy device and close the serial port
   def close(self):
-    if self.sock != None:
-      # TODO deinit, if status ACQUIRING, ...
+    if self.sock is not None:
       sock = self.sock
       self.sock = None
+      self.rx.clear()
       try:
         sock.close()
       except Exception as error:
@@ -883,8 +891,7 @@ class PowerSpy:
 
   def acquisition_start(self):
     self.sendCmd(CMD_START)
-    a = self.recvCmd(3)
-    if a != CMD_OK:
+    if self.recvCmd() != CMD_OK:
       logging.error('CMD_START FAILED')
       return False
     # Switching to acquisition mode requires some time
@@ -894,95 +901,68 @@ class PowerSpy:
 
   def acquisition_stop(self):
     self.sendCmd(CMD_CANCEL)
-    a = self.recvCmd(3)
     # FIXME Documentation says it returns CMD_OK but always get CMD_FAILED
-    #if a != CMD_OK:
-    #  logging.error('CMD_CANCEL FAILED')
-    #  return False
+    self.recvCmd()
     return True
 
   # Start real time monitoring with the specified averaging periods
   # rt_stop() must be called if the function succeed
   def rt_start(self, avg_period):
-    # Change the socket timeout to wait at least the interval plus the default timeout
-    interval = avg_period / self.frequency
-    self.sock.settimeout(interval + DEFAULT_TIMEOUT)
     # Check if exceeded number of avg_period
     if avg_period > self.max_avg_period:
       logging.error('Your PowerSpy does not support %d averaging periods (only %d).' % (avg_period, self.max_avg_period))
       return False
+    # Change the socket timeout to wait at least the interval plus the default timeout
+    self.sock.settimeout(avg_period / self.frequency + DEFAULT_TIMEOUT)
     # Encoding of the J command is different between v1 and v2
     if self.hw_version == "02":
       # PowerSpy v1 (hw_version == "02") format for CMD_RT <JXX>
       self.sendCmd("%s%02X" % (CMD_RT, avg_period))
     else:
       self.sendCmd("%s%04X" % (CMD_RT, avg_period))
-    a = self.recvCmd(3)
-    if a != CMD_OK:
+    if self.recvCmd() != CMD_OK:
       logging.error('CMD_RT FAILED')
       return False
     return True
 
-  # Read monitored values and display them
+  # Read one realtime measurement: (voltage, current, power, peak voltage, peak current), or None
   def rt_read(self):
-    # Periodically read the input
-    res = self.recvCmd(40) # 38 without the end of line or 40 with
-    # RMS (Root Mean Square)
-    # square of the RMS voltage (8 hex digits)
-    # square of the RMS current (8 hex digits)
-    # square of the RMS power (8 hex digits)
-    # peak voltage (4 hex digits)
-    # peak current (4 hex digits)
-    values = res.split()
-    # Should be an array of 5 elements
+    # Square of the RMS voltage, square of the RMS current, RMS power (8 hex digits each),
+    # peak voltage and peak current (4 hex digits each)
+    values = self.recvCmd().split()
     if len(values) != 5:
-      logging.warning("Invalid response")
-      return [0,0,0,0,0]
-    # convert string to values
-    conv = []
-    for i in range(5):
-      hexa = decode_hex(values[i])[0]
-      if len(hexa) == 2:
-        fmt = '>H'
-      elif len(hexa) == 4:
-        fmt = '>I'
-      else:
-        logging.error("Invalid data %d %s" % (len(hexa), hexa))
-      conv.insert(i, struct.unpack(fmt, hexa)[0])
-
-    # Note: Initially scale_factory and scale_current are the same but in case of user calibration, scale_current must be used
-    # Corrected RMS voltage = squareroot [ (square of the RMS voltage returned by fonction) x (Uscale_current)2 ]
-    # Corrected RMS current = squareroot [ (square of the RMS current returned by fonction) x (Iscale_current)2 ]
-    # Corrected RMS power = (square of the RMS current returned by fonction) x (Uscale_factory) x (Iscale_current)
-    # Corrected peak voltage = peak voltage returned by fonction x Uscale_current
-    # Corrected peak current = peak current returned by fonction x Iscale_current
-    voltage = math.sqrt(self.uscale_current * self.uscale_current * conv[0])
-    current = math.sqrt(self.iscale_current * self.iscale_current * conv[1])
-    power = self.pscale_current * conv[2]
-    pvoltage = self.uscale_current * conv[3]
-    pcurrent = self.iscale_current * conv[4]
-
-    return voltage, current, power, pvoltage, pcurrent
+      if values:
+        logging.warning("Invalid response: %s", values)
+      return None
+    try:
+      u2, i2, p, pu, pi = [int(v, 16) for v in values]
+    except ValueError:
+      logging.warning("Invalid response: %s", values)
+      return None
+    return (math.sqrt(self.uscale * self.uscale * u2),
+            math.sqrt(self.iscale * self.iscale * i2),
+            self.pscale * p,
+            self.uscale * pu,
+            self.iscale * pi)
 
   # Stop the real time monitoring
   def rt_stop(self):
     # Reset the timeout to default
     self.sock.settimeout(DEFAULT_TIMEOUT)
-    # TODO can check status before to stop
     self.sendCmd(CMD_RT_STOP)
-    # flush input because it can have still data to read
-    while True:
-      a = self.recvCmd(3)
-      if a == CMD_FAILED:
-        logging.error('CMD_RT_STOP FAILED')
-        return False
+    # Skip realtime frames still in flight until the answer
+    for _ in range(10):
+      a = self.recvCmd()
       if a == CMD_OK:
         return True
-    return True
+      if a == CMD_FAILED or a == "":
+        break
+    logging.error('CMD_RT_STOP FAILED')
+    return False
 
   # Display measurements every 1 second
-  # If interval is higher than the PowerSpy device capacity, it will be an average of the averaged PowerSpy measurements
-  def rt_capture(self, filename="", measurement_callback=None):
+  # If one second is more than the PowerSpy averaging capacity, average several PowerSpy measurements
+  def rt_capture(self, filename="", measurement_callback=None, allmetrics=False):
     self.last_error = None
     csv_file = None
     writer = None
@@ -995,14 +975,11 @@ class PowerSpy:
         return False
       acquisition_started = True
 
-      # Convert the interval using frequency to find the averaging periods
-      avg_period = int(round(self.frequency))
-      if avg_period > self.max_avg_period:
-        logging.warning('PowerSpy capacity exceeded: it will be average of averaged values for one second.')
-        avg_period = int(round(self.frequency))
-        every = 1
-      else:
-        every = 0
+      # Averaging periods for one second, split over several reads if above the device capacity
+      every = math.ceil(self.frequency / self.max_avg_period)
+      avg_period = int(round(self.frequency / every))
+      if every > 1:
+        logging.warning('PowerSpy capacity exceeded: each value is the average of %d measurements.', every)
 
       if not self.rt_start(avg_period):
         self.last_error = 'Realtime acquisition failed'
@@ -1010,56 +987,45 @@ class PowerSpy:
         return False
       realtime_started = True
 
-      if not is_gui and measurement_callback is None:
+      if measurement_callback is None:
         if allmetrics:
           print("# Timestamp\tV\tA\tW\tV\tA")
         else:
           print("# Timestamp\tW")
 
-      if filename != "":
-        csv_file = open(filename, "a+", newline='')
-        csv_file.seek(0)
+      if filename:
+        new_file = not os.path.exists(filename) or os.path.getsize(filename) == 0
+        csv_file = open(filename, "a", newline='')
         writer = csv.writer(csv_file, delimiter=';', quoting=csv.QUOTE_NONE)
-        if csv_file.read(1) == "":
+        if new_file:
           writer.writerow(["Timestamp", "Power"])
 
-      # Accumulate samples only when the requested one-second interval exceeds
-      # the device's native averaging capacity.
-      voltages = []
-      currents = []
-      powers = []
-      pvoltages = []
-      pcurrents = []
+      samples = []
+      missed = 0
       while self.running:
-        voltage, current, power, pvoltage, pcurrent = self.rt_read()
+        values = self.rt_read()
         if not self.running:
           break
-        # TODO should we check if rt_read returns [0,0,0,0,0] or None?
-        if every != 0:
-          voltages.append(voltage)
-          currents.append(current)
-          powers.append(power)
-          pvoltages.append(pvoltage)
-          pcurrents.append(pcurrent)
-          if len(voltages) != every:
-            continue
-          voltage = sum(voltages) / float(len(voltages))
-          current = sum(currents) / float(len(currents))
-          power = sum(powers) / float(len(powers))
-          pvoltage = max(pvoltages)
-          pcurrent = max(pcurrents)
-          voltages = []
-          currents = []
-          powers = []
-          pvoltages = []
-          pcurrents = []
+        if values is None:
+          missed += 1
+          if missed >= MAX_MISSED_READS:
+            self.last_error = "No data from PowerSpy. Check that it is powered on and in range."
+            logging.error(self.last_error)
+            break
+          continue
+        missed = 0
+
+        samples.append(values)
+        if len(samples) < every:
+          continue
+        cols = list(zip(*samples))
+        samples = []
+        voltage, current, power = (sum(c) / len(c) for c in cols[:3])
+        pvoltage, pcurrent = max(cols[3]), max(cols[4])
 
         timestamp = time.time()
         if measurement_callback is not None:
           measurement_callback(timestamp, power)
-        elif is_gui:
-          # Compatibility for callers that still attach a GUI directly.
-          self.gui.update_data_fields(f"{timestamp:0.0f}", f"{power:.3f}")
         else:
           # Write to terminal
           if allmetrics:
@@ -1078,7 +1044,7 @@ class PowerSpy:
         if csv_file is not None:
           writer.writerow(['{:.0f}'.format(timestamp), '{:.3f}'.format(power)])
           csv_file.flush()
-          
+
     except Exception as e:
       self.last_error = "Realtime capture failed (%s)" % e
       logging.error(self.last_error)
@@ -1098,16 +1064,13 @@ class PowerSpy:
           logging.warning("Cannot stop acquisition cleanly: %s", error)
     return self.last_error is None
 
-  # Signal handler to exit properly on SIGINT
-  def exit_gracefully(self, signal, frame):
-    self.running = False
-
-def is_valid_mac(address):
-  address_regex = re.compile(r"""
-      (^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$) |  # 00:1A:2B:3C:4D:5E or 00-1A-2B-3C-4D-5E
-      (^([0-9A-Fa-f]{4}\.){2}([0-9A-Fa-f]{4})$)      # 001A.2B3C.4D5E (Cisco format)
-  """, re.VERBOSE)
-  return bool(address_regex.match(address))
+# Return the MAC address as XX:XX:XX:XX:XX:XX (the form sockets expect), or None if invalid.
+# Accepts 00:1A:2B:3C:4D:5E, 00-1A-2B-3C-4D-5E and 001A.2B3C.4D5E (Cisco format).
+def normalize_mac(address):
+  digits = re.sub(r'[\s:.-]', '', address or '')
+  if not re.fullmatch(r'[0-9A-Fa-f]{12}', digits):
+    return None
+  return ':'.join(digits[i:i + 2] for i in range(0, 12, 2)).upper()
 
 #-------------------------------------------------------------------------------------------
 # Program main
@@ -1120,50 +1083,45 @@ if __name__ == '__main__':
   parser.add_argument('-g', '--gui', action='store_true', help='GUI interface.')
   parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
   parser.add_argument('-a', '--allmetrics', action='store_true', help='Show all metrics.')
-  parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy_"+str(int(time.time()))+".csv", default=None,
+  parser.add_argument('-f', '--file', type=str, nargs='?', const="powerspy-"+str(int(time.time()))+".csv", default=None,
   help='Name of csv file to store power data. If used without argument, a default name is assigned.')
 
   args = parser.parse_args()
 
+  if args.verbose:
+    logging.basicConfig(level=logging.DEBUG)
+
   if args.gui:
-    # Import GUI modules
-    # For the GUI interface
-    import ttkbootstrap as ttk
+    # GUI modules, all from the standard library
     import tkinter as tk
-    from tkinter import filedialog, messagebox
-    from ttkbootstrap.constants import *
+    import webbrowser
+    from collections import deque
+    from tkinter import ttk, filedialog, font
     # Start GUI
-    is_gui = True
-    dev = PowerSpy()
-    app = PSCGUI(dev)
-    dev.gui = app
+    app = PSCGUI(PowerSpy())
     app.run()
   else:
     # Start CLI
-    if (args.devicemac is None) or (not is_valid_mac(args.devicemac)):
+    mac_address = normalize_mac(args.devicemac)
+    if mac_address is None:
       print("MAC address is not valid: %s" % args.devicemac)
       sys.exit(1)
 
     print("Please wait while connecting and getting data from PowerSpy")
 
-    if args.verbose:
-      if args.verbose > 0:
-        logging.basicConfig(level=logging.DEBUG)
-
-    if args.allmetrics:
-        allmetrics = True
-
     dev = PowerSpy()
 
-    # Setup signal handler for CTRL-C
-    signal.signal(signal.SIGINT, lambda s, f: dev.exit_gracefully(s, f))
+    # First CTRL-C stops the capture cleanly, a second one quits immediately
+    def stop_capture(signum, frame):
+      dev.running = False
+      signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGINT, stop_capture)
 
-    # TODO set port to 1 but can be different?
-    port = 1
-    err = dev.connect((args.devicemac, port))
+    # RFCOMM channel 1 is the PowerSpy default (macOS discovers it through SDP)
+    err = dev.connect((mac_address, 1))
     if err:
       detail = ": %s" % dev.last_error if dev.last_error else ""
-      print("Cannot connect to the device %s%s" % (args.devicemac, detail))
+      print("Cannot connect to the device %s%s" % (mac_address, detail))
       sys.exit(1)
 
     try:
@@ -1172,17 +1130,19 @@ if __name__ == '__main__':
       dev.last_error = "Device initialization failed: %s" % error
       logging.error(dev.last_error)
       initialized = False
+    except KeyboardInterrupt:
+      dev.close()
+      sys.exit(130)
     if not initialized:
       detail = ": %s" % dev.last_error if dev.last_error else ""
       print("Device cannot be initialized%s" % detail)
       dev.close()
       sys.exit(1)
 
-    if args.file is None:
-      args.file = ""
-
     try:
-      captured = dev.rt_capture(args.file)
+      captured = dev.rt_capture(args.file or "", allmetrics=args.allmetrics)
+    except KeyboardInterrupt:
+      sys.exit(130)
     except Exception as error:
       dev.last_error = "PowerSpy capture failed: %s" % error
       logging.error(dev.last_error)
