@@ -48,7 +48,7 @@ python powerspycli.py -g
 
 The GUI version only uses Tkinter, which comes with Python. Some Linux distributions ship it as a separate package (e.g., `python3-tk`), and so does Homebrew Python on macOS (`python-tk`).
 
-![PowerSpyCli GUI](powerspycli-gui.png)
+<img src="powerspycli-gui.png" width="30%">
 
 ### Arguments
 
