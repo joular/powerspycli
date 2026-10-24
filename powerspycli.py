@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 #
 # Copyright (c) 2021-2026 Adel Noureddine <adel.noureddine@outlook.com>
 #
@@ -16,11 +15,8 @@
 # which accompanies this distribution, and is available at:
 # https://www.gnu.org/licenses/lgpl-3.0.en.html
 
-# To disable Python compile cache
-import sys
-sys.dont_write_bytecode = True
-
 # For connecting and collecting data from the power meter
+import sys
 import logging
 import os
 import socket
@@ -33,9 +29,17 @@ import time    # sleep/time
 import errno   # IOError numbers
 import csv     # for csv handling
 import threading
+import webbrowser
+from collections import deque
+try: # Tkinter is optional, the command line works without it
+  import tkinter as tk
+  from tkinter import ttk, filedialog, font
+except ImportError:
+  tk = None
 
 # PowerSpy commands used here (see specifications/)
 CMD_ID = '?'
+CMD_RESET = 'R'
 CMD_EEPROM_READ = 'V'
 CMD_START = 'S'
 CMD_CANCEL = 'C'
@@ -49,7 +53,9 @@ CMD_FAILED = 'Z'
 
 # Constants
 DEFAULT_TIMEOUT = 3.0 # secs (float allowed, timeout to receive response from PowerSpy, except in realtime mode)
-MAX_MISSED_READS = 3  # stop realtime capture after this many reads in a row without data
+MAX_MISSED_READS = 3  # reinitialize the link after this many bad realtime frames in a row
+MAX_RX_BYTES = 1024   # drop the receive buffer when it grows this big without a frame end
+RECONNECT_PAUSE = 2   # secs between reconnection attempts
 
 #-------------------------------------------------------------------------------------------
 # Bluetooth transports
@@ -369,8 +375,9 @@ def nice_ceiling(value):
       return k * magnitude
 
 class PSCGUI:
-  def __init__(self, powerspy_):
+  def __init__(self, powerspy_, mac_address="", file_path="", allmetrics=False):
     self.powerspy = powerspy_
+    self.allmetrics = allmetrics
     self.thread = None
     self.history = deque(maxlen=120) # last 2 minutes at one value per second
     self._cli_process = None
@@ -380,6 +387,9 @@ class PSCGUI:
     self.root.title("PowerSpyCli")
     self.root.configure(bg=BG)
     self.root.minsize(460, 0)
+    self.root.protocol("WM_DELETE_WINDOW", self.close)
+    if sys.platform == "darwin":
+      self.root.createcommand("tk::mac::Quit", self.close) # Cmd+Q
 
     family = font.nametofont("TkDefaultFont").actual("family")
     self.font_small = (family, 10)
@@ -426,6 +436,7 @@ class PSCGUI:
     self.mac_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW)
     self.mac_entry.bind("<Key>", lambda e: self._set_message())
     self.mac_entry.bind("<Return>", lambda e: self.toggle_capture())
+    self.mac_entry.insert(0, mac_address)
 
     self.write_to_file = tk.BooleanVar(value=False)
     self.file_path = tk.StringVar()
@@ -453,6 +464,9 @@ class PSCGUI:
     self.power_value = tk.Label(value, bg=CARD, fg=INK, font=(family, 44, "bold"))
     self.power_value.pack(side=tk.LEFT)
     tk.Label(value, text="W", bg=CARD, fg=MUTED, font=(family, 20)).pack(side=tk.LEFT, anchor=tk.S, padx=(6, 0), pady=(0, 10))
+    if allmetrics:
+      self.metrics_value = tk.Label(value, bg=CARD, fg=MUTED, font=normal)
+      self.metrics_value.pack(side=tk.RIGHT, anchor=tk.S, pady=(0, 12))
     tk.Frame(reading, bg=BORDER, height=1).pack(fill=tk.X, pady=(6, 10))
     stats = tk.Frame(reading, bg=CARD)
     stats.pack(fill=tk.X)
@@ -482,6 +496,10 @@ class PSCGUI:
     link.pack(side=tk.RIGHT)
     link.bind("<Button-1>", lambda e: webbrowser.open(PROJECT_URL))
 
+    if file_path:
+      self.write_to_file.set(True)
+      self.file_path.set(file_path)
+      self.toggle_file_selector()
     self._reset_stats()
 
   def _card(self, parent):
@@ -497,6 +515,8 @@ class PSCGUI:
     self.history.clear()
     self.power_value.config(text="—")
     self.time_value.config(text="")
+    if self.allmetrics:
+      self.metrics_value.config(text="")
     for label in self.stat_values.values():
       label.config(text="—")
     self._draw_trend()
@@ -538,7 +558,7 @@ class PSCGUI:
         points += [start + i * step, bottom - power / scale * (bottom - top)]
       c.create_line(points, fill=ACCENT, width=2)
 
-  def update_data_fields(self, timestamp, power):
+  def update_data_fields(self, timestamp, power, voltage=None, current=None):
     """Show a new measurement and update the session statistics."""
     if self.first_time is None:
       self.first_time = timestamp
@@ -552,6 +572,8 @@ class PSCGUI:
 
     elapsed = int(timestamp - self.first_time)
     self.power_value.config(text="%.3f" % power)
+    if self.allmetrics:
+      self.metrics_value.config(text="%.1f V   %.3f A" % (voltage, current))
     self.time_value.config(text=time.strftime("%H:%M:%S", time.localtime(timestamp)))
     self.stat_values["Average"].config(text="%.3f W" % (self.total / self.count))
     self.stat_values["Peak"].config(text="%.3f W" % self.peak)
@@ -597,9 +619,15 @@ class PSCGUI:
 
   def _run_macos_cli_capture(self, mac_address, file_path):
     """Run macOS IOBluetooth on a child process's main thread."""
-    command = [sys.executable, "-u", os.path.abspath(__file__), "-m", mac_address]
+    verbose = logging.getLogger().isEnabledFor(logging.DEBUG)
+    command = [sys.executable, "-u", os.path.abspath(__file__), "-m", mac_address,
+               "-r", str(self.powerspy.retries)]
     if file_path:
       command.extend(["-f", file_path])
+    if self.allmetrics:
+      command.append("-a")
+    if verbose:
+      command.append("-v")
 
     process = None
     diagnostics = []
@@ -618,17 +646,22 @@ class PSCGUI:
         self._interrupt_cli_process()
       for line in process.stdout:
         text = line.strip()
-        match = re.match(
-          r"^(\d+(?:\.\d+)?)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$",
-          text,
-        )
-        if match:
+        try:
+          values = [float(v) for v in text.split()]
+        except ValueError:
+          values = []
+        if len(values) in (2, 6): # timestamp and power, or all metrics with -a
           if not saw_measurement:
             saw_measurement = True
             self._schedule(self._capture_started)
-          self._schedule(self.update_data_fields, float(match.group(1)), float(match.group(2)))
+          if len(values) == 2:
+            self._schedule(self.update_data_fields, values[0], values[1])
+          else:
+            self._schedule(self.update_data_fields, values[0], values[3], values[1], values[2])
         elif text and not text.startswith("Please wait while connecting"):
           diagnostics.append(text)
+          if verbose:
+            sys.stderr.write(line)
 
         if not self.powerspy.running:
           self._interrupt_cli_process()
@@ -689,8 +722,8 @@ class PSCGUI:
   def _capture_started(self):
     self._set_status("Live", LIVE)
 
-  def _measurement_received(self, timestamp, power):
-    self._schedule(self.update_data_fields, timestamp, power)
+  def _measurement_received(self, timestamp, power, voltage, current):
+    self._schedule(self.update_data_fields, timestamp, power, voltage, current)
 
   def _capture_finished(self):
     self.powerspy.running = False
@@ -719,6 +752,15 @@ class PSCGUI:
     if file_path:
       self.file_path.set(file_path)
 
+  # Window close: stop a running capture cleanly (up to 10 s) before quitting
+  def close(self, waited=0):
+    if self.thread is not None and self.thread.is_alive() and waited < 100:
+      if self.powerspy.running:
+        self.stop_process()
+      self.root.after(100, self.close, waited + 1)
+      return
+    self.root.destroy()
+
   def run(self):
     self.root.mainloop()
 
@@ -727,10 +769,13 @@ class PSCGUI:
 #-------------------------------------------------------------------------------------------
 
 class PowerSpy:
-  def __init__ (self, socket_factory=create_rfcomm_socket):
+  def __init__ (self, socket_factory=create_rfcomm_socket, retries=5):
     self.sock = None
     self.socket_factory = socket_factory
+    self.address = None
+    self.retries = retries # reconnection attempts when the link is lost
     self.rx = bytearray() # received bytes not yet returned as a frame
+    self.link_lost = False # set by recvCmd on timeout, error or closed link
     self.last_error = None
     self.status = None
     self.hw_version = None
@@ -739,13 +784,13 @@ class PowerSpy:
     self.max_avg_period = None
     self.running = True
 
-  def connect(self, address):
+  def connect(self, address, attempts=3):
     if self.sock is not None:
       logging.warning("Already connected")
       return 1
 
-    # Try to connect 3 times before raising error
-    for attempt in range(3):
+    self.address = address
+    for attempt in range(attempts):
       self.last_error = None
       try:
         self.sock = self.socket_factory()
@@ -765,7 +810,7 @@ class PowerSpy:
           self.sock = None
         if isinstance(error, (ImportError, PermissionError)) or not self.running:
           break
-        if attempt < 2:
+        if attempt < attempts - 1:
           time.sleep(3) # Sleep 3 seconds before retrying
     return 1
 
@@ -776,10 +821,14 @@ class PowerSpy:
     logging.debug("SEND: %s" % buf)
     self.sock.sendall(buf.encode())
 
-  # Return the body of the next <...> frame, or "" on timeout or error.
-  # Bytes after the frame are kept for the next call.
+  # Return the body of the next <...> frame, or "" on timeout, error, closed link,
+  # or when the capture is stopped meanwhile. Bytes after the frame are kept for the next call.
   def recvCmd(self):
     assert(self.sock is not None)
+    self.link_lost = False
+    was_running = self.running
+    timeout = self.sock.gettimeout() or DEFAULT_TIMEOUT
+    deadline = time.monotonic() + 3 * timeout # bound for a stream without frame ends
     while True:
       end = self.rx.find(b'>')
       if end >= 0:
@@ -791,21 +840,29 @@ class PowerSpy:
         buf = frame[start + 1:].decode('ascii', 'replace')
         logging.debug("RECV: <%s>" % buf)
         return buf
+      if was_running and not self.running:
+        return ""
+      if time.monotonic() > deadline:
+        logging.error("No complete frame from PowerSpy within %.0f s" % (3 * timeout))
+        self.link_lost = True
+        return ""
+      if len(self.rx) >= MAX_RX_BYTES:
+        self.rx.clear() # garbage without a frame end, the deadline above reports it
       try:
         r = self.sock.recv(256)
       except socket.timeout as err:
         logging.warning("Socket timeout while receiving command: %s" % err)
+        self.link_lost = True
         return ""
       except OSError as err:
-        if err.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-          logging.debug("EAGAIN or EWOULDBLOCK due to signal interrupt. Try to quit.")
-          self.running = False
-        else:
-          logging.error("Socket error while receiving command: %s" % err)
+        self.last_error = "Bluetooth link error: %s" % err
+        logging.error(self.last_error)
+        self.link_lost = True
         return ""
       if not r:
-        logging.error("PowerSpy closed the Bluetooth connection")
-        self.running = False
+        self.last_error = "PowerSpy closed the Bluetooth connection"
+        logging.error(self.last_error)
+        self.link_lost = True
         return ""
       self.rx.extend(r)
 
@@ -817,7 +874,8 @@ class PowerSpy:
       s = self.recvCmd()
       if not s or s.startswith('POWERSPY'):
         break
-    mat = re.match('POWERSPY(.)(.{12})', s)
+    # Spec 3.3.1 shows the fields separated by spaces, the device may send them packed
+    mat = re.match('POWERSPY(.)(.{12})', s.replace(' ', ''))
     if not mat:
       # Unable to process response for ID
       return False
@@ -842,6 +900,7 @@ class PowerSpy:
 
   def get_frequency(self):
     self.sendCmd(CMD_FREQUENCY)
+    # Not the 0.01 Hz value of spec 3.4.3: the device answers the mains period in clock ticks (1 MHz on v1, 1.3824 MHz on v2)
     f = int(self.recvCmd()[1:], 16)
     self.frequency = (1000000.0 if self.hw_version == "02" else 1382400.0) / f
 
@@ -859,7 +918,7 @@ class PowerSpy:
       self.acquisition_stop()
     self.get_frequency()
     logging.debug("frequency:%.8f" % (self.frequency))
-    # Actual correction coefficients (same as factory ones unless the user recalibrated)
+    # Current coefficients, not the factory ones the spec formulas name: they follow a recalibration and are equal otherwise
     self.uscale = self.get_eeprom_float(0x0E)
     self.iscale = self.get_eeprom_float(0x12)
     self.pscale = self.uscale * self.iscale
@@ -893,7 +952,6 @@ class PowerSpy:
     self.sendCmd(CMD_CANCEL)
     # FIXME Documentation says it returns CMD_OK but always get CMD_FAILED
     self.recvCmd()
-    return True
 
   # Start real time monitoring with the specified averaging periods
   # rt_stop() must be called if the function succeed
@@ -943,11 +1001,37 @@ class PowerSpy:
     # Skip realtime frames still in flight until the answer
     for _ in range(10):
       a = self.recvCmd()
-      if a == CMD_OK:
+      if a in (CMD_OK, CMD_OK + '.'): # spec 3.4.7 shows <K.>
         return True
       if a == CMD_FAILED or a == "":
         break
     logging.error('CMD_RT_STOP FAILED')
+    return False
+
+  # The link failed (timeout, error or closed by the device): close and reopen it and
+  # reinitialize the meter as spec 3.2 describes, then restart the realtime mode.
+  # Gives up after self.retries attempts.
+  def reconnect(self, avg_period):
+    reason = self.last_error or "No data from PowerSpy"
+    for attempt in range(1, self.retries + 1):
+      self.close()
+      time.sleep(RECONNECT_PAUSE)
+      if not self.running:
+        return False
+      logging.warning("Reconnecting to PowerSpy (%d/%d)", attempt, self.retries)
+      if self.connect(self.address, attempts=1) != 0:
+        continue
+      try:
+        if self.hw_version == "02": # Reset command, v1 only: v2 does not support it (spec 3.3.4)
+          self.sendCmd(CMD_RESET)
+          self.recvCmd()
+        # init() also stops a realtime mode the device may still be in
+        if self.init() and self.acquisition_start() and self.rt_start(avg_period):
+          return True
+      except Exception as error:
+        logging.error("Reconnection failed: %s", error)
+    self.last_error = "%s, giving up after %d reconnection attempts" % (reason, self.retries)
+    logging.error(self.last_error)
     return False
 
   # Display measurements every 1 second
@@ -997,10 +1081,10 @@ class PowerSpy:
           break
         if values is None:
           missed += 1
-          if missed >= MAX_MISSED_READS:
-            self.last_error = "No data from PowerSpy. Check that it is powered on and in range."
-            logging.error(self.last_error)
-            break
+          if self.link_lost or missed >= MAX_MISSED_READS:
+            if not self.reconnect(avg_period):
+              break
+            samples, missed = [], 0
           continue
         missed = 0
 
@@ -1014,15 +1098,15 @@ class PowerSpy:
 
         timestamp = time.time()
         if measurement_callback is not None:
-          measurement_callback(timestamp, power)
+          measurement_callback(timestamp, power, voltage, current)
         else:
           # Write to terminal
           if allmetrics:
-            output = "%0.0f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (
+            output = "%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (
               timestamp, voltage, current, power, pvoltage, pcurrent
             )
           else:
-            output = "%0.0f\t%0.3f" % (timestamp, power)
+            output = "%0.3f\t%0.3f" % (timestamp, power)
           if sys.stdout.isatty():
             sys.stdout.write("\r%s          " % output)
           else:
@@ -1031,7 +1115,7 @@ class PowerSpy:
 
         # Save to CSV file
         if csv_file is not None:
-          writer.writerow(['{:.0f}'.format(timestamp), '{:.3f}'.format(power)])
+          writer.writerow(['{:.3f}'.format(timestamp), '{:.3f}'.format(power)])
           csv_file.flush()
 
     except Exception as e:
@@ -1041,12 +1125,12 @@ class PowerSpy:
     finally:
       if csv_file is not None:
         csv_file.close()
-      if realtime_started:
+      if realtime_started and self.sock is not None:
         try:
           self.rt_stop()
         except Exception as error:
           logging.warning("Cannot stop realtime mode cleanly: %s", error)
-      if acquisition_started:
+      if acquisition_started and self.sock is not None:
         try:
           self.acquisition_stop()
         except Exception as error:
@@ -1068,26 +1152,26 @@ def normalize_mac(address):
 if __name__ == '__main__':
   import argparse
   parser = argparse.ArgumentParser(description='Alciom PowerSpy reader.')
-  parser.add_argument('-m', '--devicemac', metavar='MAC', help='MAC address of the PowerSpy device.')
+  parser.add_argument('-m', '--devicemac', metavar='MAC', help='MAC address of the PowerSpy device (required without -g).')
   parser.add_argument('-g', '--gui', action='store_true', help='GUI interface.')
   parser.add_argument('-v', '--verbose', action='store_true', help='Verbose mode.')
   parser.add_argument('-a', '--allmetrics', action='store_true', help='Show all metrics.')
   parser.add_argument('-f', '--file', type=str, nargs='?', const=default_csv_name(), default=None,
   help='Name of csv file to store power data. If used without argument, a default name is assigned.')
+  parser.add_argument('-r', '--retries', type=int, default=5, metavar='N',
+  help='Reconnection attempts when the link to the PowerSpy is lost (default 5, 0 disables).')
 
   args = parser.parse_args()
+  if args.devicemac is None and not args.gui:
+    parser.error('-m/--devicemac is required unless -g/--gui is given')
 
   if args.verbose:
     logging.basicConfig(level=logging.DEBUG)
 
   if args.gui:
-    # GUI modules, all from the standard library
-    import tkinter as tk
-    import webbrowser
-    from collections import deque
-    from tkinter import ttk, filedialog, font
-    # Start GUI
-    app = PSCGUI(PowerSpy())
+    if tk is None:
+      sys.exit("The GUI needs Tkinter: install python3-tk (Linux) or python-tk (Homebrew).")
+    app = PSCGUI(PowerSpy(retries=args.retries), args.devicemac or "", args.file or "", args.allmetrics)
     app.run()
   else:
     # Start CLI
@@ -1098,13 +1182,14 @@ if __name__ == '__main__':
 
     print("Please wait while connecting and getting data from PowerSpy")
 
-    dev = PowerSpy()
+    dev = PowerSpy(retries=args.retries)
 
-    # First CTRL-C stops the capture cleanly, a second one kills the process
+    # First CTRL-C or SIGTERM stops the capture cleanly, a second one kills the process
     def stop_capture(signum, frame):
       dev.running = False
-      signal.signal(signal.SIGINT, signal.SIG_DFL)
+      signal.signal(signum, signal.SIG_DFL)
     signal.signal(signal.SIGINT, stop_capture)
+    signal.signal(signal.SIGTERM, stop_capture)
 
     # RFCOMM channel 1 is the PowerSpy default (macOS discovers it through SDP)
     err = dev.connect((mac_address, 1))

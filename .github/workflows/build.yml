@@ -1,0 +1,16 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: python3 -m py_compile powerspycli.py
+
+      # Also checks that the script loads without Tkinter
+      - run: python3 powerspycli.py --help
