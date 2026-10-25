@@ -583,7 +583,10 @@ class PSCGUI:
 
   def _schedule(self, callback, *args):
     """Marshal a worker-thread callback onto Tk's main thread."""
-    self.root.after(0, callback, *args)
+    try:
+      self.root.after(0, callback, *args)
+    except (tk.TclError, RuntimeError): # the window was closed before the capture thread ended
+      pass
 
   def toggle_capture(self):
     if self.thread is not None and self.thread.is_alive():
